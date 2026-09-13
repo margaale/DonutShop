@@ -1,14 +1,14 @@
 {
-  "tag": "v0.7.17",
-  "name": "DonutShop v0.7.17",
-  "published_at": "2026-09-12T19:15:57Z",
-  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.17",
-  "body": "**HD-15 Serial**\r\n- HD-15 uploads/put now an additional **45% faster** with 2M baud. \r\n  - **50** -> 60KB/s with CRC-16 only validation in fw 1.80 alone.\r\n  - 60 -> **87KB/s** with local DonutShop optimizations.\r\n- HD-15 baud mod linked under Files, Recommended Settings. Mod allows for faster transfers with HD-15 Serial.\r\n\r\n**Misc** \r\n- Bulk file copy now prompts to create destination folder if it does not exist.\r\n- OSD Mirror in compact mode now has a min-width limit so stats still display properly.\r\n- WebCtl now lives mostly in PROGMEM freeing up RAM.\r\n- Fixed DonutShop's Firmware Update \"info\" popover in mobile mode. ",
+  "tag": "v0.7.18",
+  "name": "DonutShop v0.7.18",
+  "published_at": "2026-09-13T17:27:42Z",
+  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.18",
+  "body": "- \"apply & state\" on Dashboard has been moved to the 'hidden by default' Struct tab\r\n  - Expert -> Options to show hidden tabs\r\n- new DonutShop Memory card on Dashboard now shows the overall state\r\n- gameID entries moved to PSRAM freeing up internal RAM\r\n- HD-15 serial now restores previous baud rate after wake\r\n- DonutShop can now detect when the IR Remote and the Auto-Sleep timer methods were used to sleep/wake and no longer requires a page refresh. Now all methods used to sleep/wake should be accounted for. Thanks to @haxman for bringing this to light. ",
   "prerelease": false,
   "full": {
-    "name": "DonutShop_v0.7.17_full.bin",
-    "size": 1998336,
-    "sha256": "c25032e708436544441d8297d08bc5b274bdff8fcf73e26e75b7c62d1ac8dff0"
+    "name": "DonutShop_v0.7.18_full.bin",
+    "size": 2013984,
+    "sha256": "334419465631ddf4df4fa35af1df9238aba7e2644963d55f04e428e6fd77d39e"
   },
   "recovery": {
     "name": "nora_recovery.bin",
