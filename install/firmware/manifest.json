@@ -1,14 +1,14 @@
 {
-  "tag": "v0.7.18",
-  "name": "DonutShop v0.7.18",
-  "published_at": "2026-09-13T17:27:42Z",
-  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.18",
-  "body": "- \"apply & state\" on Dashboard has been moved to the 'hidden by default' Struct tab\r\n  - Expert -> Options to show hidden tabs\r\n- new DonutShop Memory card on Dashboard now shows the overall state\r\n- gameID entries moved to PSRAM freeing up internal RAM\r\n- HD-15 serial now restores previous baud rate after wake\r\n- DonutShop can now detect when the IR Remote and the Auto-Sleep timer methods were used to sleep/wake and no longer requires a page refresh. Now all methods used to sleep/wake should be accounted for. Thanks to @haxman for bringing this to light. ",
+  "tag": "v0.7.19",
+  "name": "DonutShop v0.7.19",
+  "published_at": "2026-09-14T02:35:18Z",
+  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.19",
+  "body": "**Options** \r\n- new \"Glazed\" theme alternative to the default \"Dark\" theme.\r\n- Experimental Firmware update now resides on the Dashboard.\r\n- Options has moved from Expert to the gameID / Settings tab.\r\n- Expert and Console tabs can now also be hidden in gameID / Settings -> Options.\r\n- DonutShop Memory stats now hidden by default, enable in Options.",
   "prerelease": false,
   "full": {
-    "name": "DonutShop_v0.7.18_full.bin",
-    "size": 2013984,
-    "sha256": "334419465631ddf4df4fa35af1df9238aba7e2644963d55f04e428e6fd77d39e"
+    "name": "DonutShop_v0.7.19_full.bin",
+    "size": 2052912,
+    "sha256": "1bbb4bdc8b22566ca97085aec362a422d7ac2392a5581208b13f34d4737b9ee7"
   },
   "recovery": {
     "name": "nora_recovery.bin",
