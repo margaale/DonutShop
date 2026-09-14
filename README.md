@@ -1,8 +1,8 @@
 # DonutShop
-is an Arduino Nano ESP32 + OTG adapter that changes profiles for the RetroTink 4K based on gameID. <br />
+is an Arduino Nano ESP32 + OTG adapter that changes profiles for the RetroTink 4K based on gameID. Now also featuring WebCtl. <br />
 
-<p align="center"><img src="./images/1.JPG"><br />
-<p align="center"><img src="./images/2.JPG"><br />
+<!-- <p align="center"><img src="./images/1.JPG"><br />
+<p align="center"><img src="./images/2.JPG"><br /> -->
 
 <p align="center"><img width="500" src="./images/3.JPG"></p><br />
 
@@ -10,12 +10,13 @@ See it in action: https://youtu.be/ldbfFbKzjh8 <br>
 
   - Note: In version v0.7.x you can still access this gameID only version at http://donutshop.local/gameid
     
-<br /><br />
+
 ## DonutShop ft. RT4K WebCtl (work in progress v0.7.x)
  - Requires RT4K v1.75+ fw
  - This version integrates the gameID functionality into the RT4K WebCtl internal test app. It's still very much a work in progress, but I wanted to share the experience thus far.
  - In a nutshell, with WebCtl on DonutShop, you gain:
     - Dashboard of RT4K status, ability to change Input/Output
+    - Flash latest experimental firmware over Wi-Fi directly from Github
     - Remote + OSD
     - Load profiles by double-clicking on the filename, allowing you to quickly try out new profiles.
     - File Manager with bulk file operations including, copy/move/delete/download,drag & drop uploads.
@@ -23,11 +24,14 @@ See it in action: https://youtu.be/ldbfFbKzjh8 <br>
       - Save live profile to current directory with the option to change name
       - View .txt & .html files immediately in-browser. Great for reading various guides found on the SD Card image.
       - Edit & Save .txt files in-browser for immediate changes to various features that use .txt files.
-    - SVS Simulator (for example - load SVS profiles by #)
-    - Stage & Flash latest experimental firmware over Wi-Fi directly from Github
+    - RetroTink "kitchen sink" Diagnostics page
+    - Console to manually run commands
 
 <br>
-<p align="center"><img src="./images/5.JPG"><br />
+Dark Theme
+<p align="center"><img src="./images/5.JPG"></p>
+Glazed Theme
+<p align="center"><img src="./images/5b.JPG"><br />
 <p align="center"><img src="./images/6.JPG"><br />
 <p align="center"><img src="./images/7.JPG"><br />
 <p align="center"><img src="./images/8.JPG"><br />
@@ -37,7 +41,8 @@ See it in action: https://youtu.be/ldbfFbKzjh8 <br>
 <p align="center"><img src="./images/12.JPG"><br /></p><br>
 
 ## Updates
-  - New Installer only takes a few clicks.
+  - "Glazed" is the new daytime theme alternative to the default "Dark" theme.
+  - Firmware Installer only takes a few clicks.
   - WiP DonutShop ft. RT4K WebCtl now available to experience the new features of the RT4K v1.75+ firmware
   - .3mf added for printing a case.
   - NEW Terminal to relay [Remote Control Commands](https://consolemods.org/wiki/AV:RetroTINK-4K#Remote_Control_Commands). Toggle **Keyboard Nav Mode** to navigate the RT4K interface with keyboard keys.
