@@ -1,14 +1,14 @@
 {
-  "tag": "v0.7.19",
-  "name": "DonutShop v0.7.19",
-  "published_at": "2026-09-14T02:35:18Z",
-  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.19",
-  "body": "**Options** \r\n- new \"Glazed\" theme alternative to the default \"Dark\" theme.\r\n- Experimental Firmware update now resides on the Dashboard.\r\n- Options has moved from Expert to the gameID / Settings tab.\r\n- Expert and Console tabs can now also be hidden in gameID / Settings -> Options.\r\n- DonutShop Memory stats now hidden by default, enable in Options.",
+  "tag": "v0.7.20",
+  "name": "DonutShop v0.7.20",
+  "published_at": "2026-09-14T15:06:56Z",
+  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.20",
+  "body": "**Theme**\r\n- Dropdown has been replaced by a popover menu.\r\n- Glazed now has a slider to adjust tone. Most noticeable on Desktop vs Mobile.",
   "prerelease": false,
   "full": {
-    "name": "DonutShop_v0.7.19_full.bin",
-    "size": 2053504,
-    "sha256": "4a082cf94ce4191d8003d08b4effbb6f54f182866bb7096a3d218e70b6dd826b"
+    "name": "DonutShop_v0.7.20_full.bin",
+    "size": 2067232,
+    "sha256": "452dab908cf67a385722f7681e55377055cc81cac1fc6535398366fb108b7dac"
   },
   "recovery": {
     "name": "nora_recovery.bin",
