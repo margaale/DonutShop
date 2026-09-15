@@ -1,14 +1,14 @@
 {
-  "tag": "v0.7.21",
-  "name": "DonutShop v0.7.21",
-  "published_at": "2026-09-15T05:22:51Z",
-  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.21",
-  "body": "**Bug fixes**\r\n- Fixed \"update/stage latest firmware\" regressions caused by moving it from Expert to Dashboard tab.\r\n- Deleting a single file would sometimes require a page refresh to show it being removed.\r\n\r\n**Dashboard**\r\n- Cleaned up Dashboard layout when cards expand.\r\n- fwup check button stays pressed while performing check.\r\n- fw tag removed from top bar.\r\n- Glazed theme is now the former middle option. Slider removed.",
+  "tag": "v0.7.22",
+  "name": "DonutShop v0.7.22",
+  "published_at": "2026-09-15T16:16:34Z",
+  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.22",
+  "body": "- **\"Experimental Firmware stage/flash\" now 3.3x faster**. Majority of process now happens in client browser vs on Nano. Falls back to previous Nano-based methods if browser-direct fails.\r\n  - Stage + Flash comparison\r\n    - Previously (v0.7.21) = 2m 40s\r\n    - Now only **54s**\r\n- All Options persist regardless of client viewing WebCtl. (Experimental Firmware Test Mode used to be session based)\r\n- Removed redundant confirmation when doing a manual fwup go.",
   "prerelease": false,
   "full": {
-    "name": "DonutShop_v0.7.21_full.bin",
-    "size": 2061040,
-    "sha256": "8a968c2c84b94fce7c6236233785c50be6c6a1d1ed879b398deda8cab9577df4"
+    "name": "DonutShop_v0.7.22_full.bin",
+    "size": 2075440,
+    "sha256": "c7a189df04ff10b7bbb40c2be047c5ecdaa30856d0049fc9395b6375aa477e4e"
   },
   "recovery": {
     "name": "nora_recovery.bin",
