@@ -1,14 +1,14 @@
 {
-  "tag": "v0.7.20",
-  "name": "DonutShop v0.7.20",
-  "published_at": "2026-09-14T15:06:56Z",
-  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.20",
-  "body": "**Theme**\r\n- Dropdown has been replaced by a popover menu.\r\n- Glazed now has a slider to adjust tone. Most noticeable on Desktop vs Mobile.",
+  "tag": "v0.7.21",
+  "name": "DonutShop v0.7.21",
+  "published_at": "2026-09-15T05:22:51Z",
+  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.21",
+  "body": "**Bug fixes**\r\n- Fixed \"update/stage latest firmware\" regressions caused by moving it from Expert to Dashboard tab.\r\n- Deleting a single file would sometimes require a page refresh to show it being removed.\r\n\r\n**Dashboard**\r\n- Cleaned up Dashboard layout when cards expand.\r\n- fwup check button stays pressed while performing check.\r\n- fw tag removed from top bar.\r\n- Glazed theme is now the former middle option. Slider removed.",
   "prerelease": false,
   "full": {
-    "name": "DonutShop_v0.7.20_full.bin",
-    "size": 2067232,
-    "sha256": "452dab908cf67a385722f7681e55377055cc81cac1fc6535398366fb108b7dac"
+    "name": "DonutShop_v0.7.21_full.bin",
+    "size": 2061040,
+    "sha256": "8a968c2c84b94fce7c6236233785c50be6c6a1d1ed879b398deda8cab9577df4"
   },
   "recovery": {
     "name": "nora_recovery.bin",
