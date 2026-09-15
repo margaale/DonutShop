@@ -31,7 +31,7 @@ See it in action: https://youtu.be/ldbfFbKzjh8 <br>
 Dark Theme
 <p align="center"><img src="./images/5.JPG"></p>
 Glazed Theme
-<p align="center"><img src="./images/5b.JPG"><br />
+<p align="center"><img src="./images/5c.JPG"><br />
 <p align="center"><img src="./images/6.JPG"><br />
 <p align="center"><img src="./images/7.JPG"><br />
 <p align="center"><img src="./images/8.JPG"><br />
