@@ -1,14 +1,14 @@
 {
-  "tag": "v0.7.22",
-  "name": "DonutShop v0.7.22",
-  "published_at": "2026-09-15T16:16:34Z",
-  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.22",
-  "body": "- **\"Experimental Firmware stage/flash\" now 3.3x faster**. Majority of process now happens in client browser vs on Nano. Falls back to previous Nano-based methods if browser-direct fails.\r\n  - Stage + Flash comparison\r\n    - Previously (v0.7.21) = 2m 40s\r\n    - Now only **54s**\r\n- All Options persist regardless of client viewing WebCtl. (Experimental Firmware Test Mode used to be session based)\r\n- Removed redundant confirmation when doing a manual fwup go.",
+  "tag": "v0.7.23",
+  "name": "DonutShop v0.7.23",
+  "published_at": "2026-09-16T19:26:20Z",
+  "html_url": "https://github.com/svirant/DonutShop/releases/tag/v0.7.23",
+  "body": "**File Transfer**\r\n- a new faster http method is used for file transfers vs websockets. websockets is now used for control plane only.\r\n\r\n**Experimental Firmware stage/update**\r\n- \"Copy FPGA firmware\" and \"Copy updater\" steps are now even faster because of the reasoning above. \r\n  - firmware stage + update now only takes 45 seconds.\r\n\r\n**Misc**\r\n- gameID / Settings tab preloads in background upon opening DonutShop.\r\n- removed \"Bridge FIFO now\" from DonutShop stats. only Bridge FIFO peak is useful.\r\n- Last reset and Uptime now added to DonutShop Memory stats.\r\n- WebCtl is now labeled \"RT WebCtl\" until either a RT4K or RT6X has been detected; then labels itself as RT4K WebCtl or RT6X WebCtl.\r\n- tabs selected to show in Options no longer disappear / reappear when sleeping / waking.",
   "prerelease": false,
   "full": {
-    "name": "DonutShop_v0.7.22_full.bin",
-    "size": 2075440,
-    "sha256": "c7a189df04ff10b7bbb40c2be047c5ecdaa30856d0049fc9395b6375aa477e4e"
+    "name": "DonutShop_v0.7.23_full.bin",
+    "size": 2102432,
+    "sha256": "c0dcefdc596c2995640f57ef716d8a22d61323e8a46c1f809b1a37d34c1a89b3"
   },
   "recovery": {
     "name": "nora_recovery.bin",
