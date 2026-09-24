@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [nano_esp32, pico2w]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v5
+        with:
+          path: DonutShop # sketch folder name must match DonutShop.ino
+
+      - name: Install Arduino CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/arduino-cli-bin"
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+            | BINDIR="$RUNNER_TEMP/arduino-cli-bin" sh -s 1.5.1
+          echo "$RUNNER_TEMP/arduino-cli-bin" >> "$GITHUB_PATH"
+
+      - name: Cache Arduino data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-${{ matrix.profile }}-${{ hashFiles('DonutShop/sketch.yaml') }}
+
+      - name: Compile
+        working-directory: DonutShop
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli compile --profile "${{ matrix.profile }}" \
+            --build-path "build/${{ matrix.profile }}" --warnings default .
+          ls -l "build/${{ matrix.profile }}"/DonutShop.ino.*
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: DonutShop-${{ matrix.profile }}
+          path: |
+            DonutShop/build/${{ matrix.profile }}/DonutShop.ino.bin
+            DonutShop/build/${{ matrix.profile }}/DonutShop.ino.uf2
+            DonutShop/build/${{ matrix.profile }}/DonutShop.ino.merged.bin
+          if-no-files-found: error

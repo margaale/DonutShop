@@ -23,12 +23,19 @@
 #define MTV_TIME_CHECK 1500 // time between mt-viki disconnetion detection checks
 #define AM_TIME_CHECK 500 // time between auto-matrix input change detection
 #define SEND_LEDC_CHANNEL 0
+#include "platform.h" // multi-target: Nano ESP32 / Pico 2 W differences, see platform.h
+#if defined(ARDUINO_ARCH_ESP32)
 #define IR_SEND_PIN 11  // Optional IR LED Emitter for RT5X/OSSC/TV compatibility. Sends IR data out Arduino pin D11
 #define LED_BUILTIN 13
 #define IR_RECEIVE_PIN 2  // Optional IR Receiver on pin D2
 #define extronSerial Serial1
 #define extronSerial2 Serial2
 #define Serial Serial0 // ** COMMENT OUT THIS LINE ** to see output in Serial Monitor. Disables Serial output to RT4K. usbMode must also be set to "false"
+#else // Pico 2 W: IR / LED pins are in platform.h
+#define extronSerial Serial1
+#define extronSerial2 SerialPIO2
+#define Serial Serial2 // RT4K HD-15 serial (UART1). The Pico 2 W has no USB serial monitor: its USB port is the RT4K host.
+#endif
 
 
 #include <IRremote.hpp>
@@ -39,10 +46,14 @@
 #include <WebServer.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#if defined(ARDUINO_ARCH_ESP32)
 #include <ESPmDNS.h>
+#endif
 #include <ArduinoOTA.h>
+#if defined(ARDUINO_ARCH_ESP32)
 #include <WiFiManager.h>
 #include <Update.h>
+#endif
 
 uint8_t const debugE1CAP = 0; // line ~756
 uint8_t const debugE2CAP = 0; // line ~1073
@@ -54,7 +65,7 @@ const char* donuthostname = "donutshop";      // hostname, by default: http://do
 
 #define usbMode true              // USB Serial Command mode. set true to enable. requires OTG adapter. normal Serial mode will be active regardless of setting.
 
-#if usbMode
+#if usbMode && defined(ARDUINO_ARCH_ESP32) // Pico 2 W: CdcSerial comes from platform.h
 #include <EspUsbHost.h> // found in the built-in Library Manager
 EspUsbHost usbHost;
 EspUsbHostCdcSerial CdcSerial(usbHost);
@@ -469,6 +480,7 @@ void setup(){
   analogWrite(LED_GREEN,245);  // Green medium
   analogWrite(LED_BLUE,255);    // Blue off
 
+  #if defined(ARDUINO_ARCH_ESP32)
   WiFiManager wm;
   std::vector<const char *> menu = {"wifi"};
   wm.setMenu(menu);
@@ -481,6 +493,9 @@ void setup(){
   esp_wifi_set_ps(WIFI_PS_NONE); // disable power saving mode
   WiFi.setHostname(donuthostname);
   wm.autoConnect("DonutShop_Setup");
+  #else
+  platform::wifiBegin(donuthostname, "DonutShop_Setup"); // WiFiManager is ESP-only
+  #endif
 
   // Turn off orange LED when connected
   analogWrite(LED_RED,255);
@@ -488,15 +503,30 @@ void setup(){
   analogWrite(LED_BLUE,255);
 
   initPCIInterruptForTinyReceiver(); // for IR Receiver
+  #if defined(ARDUINO_ARCH_ESP32)
   Serial.begin(9600);                           // set the baud rate for the RT4K VGA serial connection
   extronSerial.begin(9600,SERIAL_8N1,3,4);   // set the baud rate for the Extron sw1 Connection
+  #else
+  Serial.setTX(DS_RT4K_TX_PIN); Serial.setRX(DS_RT4K_RX_PIN);
+  Serial.begin(9600);
+  extronSerial.setTX(DS_EXTRON1_TX_PIN); extronSerial.setRX(DS_EXTRON1_RX_PIN);
+  extronSerial.begin(9600);
+  #endif
   extronSerial.setTimeout(50);                 // sets the timeout for reading / saving into a string
+  #if defined(ARDUINO_ARCH_ESP32)
   extronSerial2.begin(9600,SERIAL_8N1,8,9);  // set the baud rate for Extron sw2 Connection
+  #else
+  extronSerial2.begin(9600); // SerialPIO, pins set in platform_rp2.cpp
+  #endif
   extronSerial2.setTimeout(50);                // sets the timeout for reading / saving into a string for the Extron sw2 Connection3
   ecap.reserve(MAX_BYTES); // reserve MAX_BYTES bytes in memory to prevent fragmentation
   einput.reserve(MAX_EINPUT); // reserve MAX_EINPUT ^^^
   MDNS.begin(donuthostname); // defined around line 40 at the top
+  #if defined(ARDUINO_ARCH_ESP32)
   if(!LittleFS.begin(true)){ // format if mount fails
+  #else
+  if(!platform::fsBegin()){ // format if mount fails
+  #endif
     Serial.println(F("LittleFS mount failed!"));
     return;
   }
@@ -523,12 +553,14 @@ void setup(){
 
   server.begin();
 
-  xTaskCreate(DDloop,"DDloop",16384,NULL,1,NULL);
-  xTaskCreate(GIDloop,"GIDloop",16384,NULL,1,NULL);
+  xTaskCreate(DDloop,"DDloop",DS_TASK_STACK,NULL,1,NULL);
+  xTaskCreate(GIDloop,"GIDloop",DS_TASK_STACK,NULL,1,NULL);
 
   #if usbMode
   CdcSerial.begin(2000000);
+  #if defined(ARDUINO_ARCH_ESP32)
   if(!usbHost.begin()) Serial.printf("usbHost.begin failed: %s\n", usbHost.lastErrorName());
+  #endif
   #endif
   
 }  // end of setup
@@ -537,6 +569,9 @@ void loop(){
    // 
    // leave empty
    //
+   #if defined(ARDUINO_ARCH_RP2040)
+   platform::loopHook(); // Pico 2 W: RT4K USB host + mDNS, and yields to DDloop/GIDloop
+   #endif
 }  // end of loop()
 
 
@@ -597,10 +632,16 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
       if(WiFi.status() == WL_CONNECTED && consoles[i].Enabled){ // wait for WiFi connection
         HTTPClient http;
         WiFiClientSecure https;
+        #if defined(ARDUINO_ARCH_ESP32)
         http.setConnectTimeout(2000); // give only 2 seconds per http console to check gameID, is only honored for IP-based addresses
+        #else
+        http.setTimeout(2000); // ESP8266-style HTTPClient: the TCP timeout also bounds the connect
+        #endif
         https.setInsecure(); // needed for MemCardPro 2.0+ firmware support
         https.setTimeout(5); // give 5 seconds for https 
+        #if defined(ARDUINO_ARCH_ESP32)
         https.setHandshakeTimeout(5); // ^^^
+        #endif
         if(consoles[i].Address.substring(0,5) == "https") http.begin(https,consoles[i].Address);
         else http.begin(consoles[i].Address);
         analogWrite(LED_BLUE,222);
@@ -2960,7 +3001,7 @@ void handleExportAll(){
 void handleGithubAssetProxy(){
   String url = server.arg("url");
   const String allowedPrefix =
-    "https://github.com/svirant/DonutShop/releases/download/";
+    "https://github.com/" DS_RELEASE_REPO "/releases/download/"; // per-target release repo, see platform.h
 
   if(!url.startsWith(allowedPrefix)){
     server.send(400, "text/plain", "Invalid GitHub release asset URL");
@@ -2974,10 +3015,14 @@ void handleGithubAssetProxy(){
 
   WiFiClientSecure https;
   https.setInsecure();
+  #if defined(ARDUINO_ARCH_ESP32)
   https.setHandshakeTimeout(15);
+  #endif
 
   HTTPClient http;
+  #if defined(ARDUINO_ARCH_ESP32)
   http.setConnectTimeout(15000);
+  #endif
   http.setTimeout(30000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
@@ -3023,18 +3068,29 @@ void handleGithubAssetProxy(){
 
 void handleUpdate(){
   server.sendHeader("Connection", "close");
+  #if defined(ARDUINO_ARCH_ESP32)
   if(Update.hasError()){
+  #else
+  if(platform::updateFailed()){
+  #endif
     server.send(500, "text/plain", "Update Failed!");
   }
   else{
     server.send(200, "text/plain", "Update Success! Rebooting...");
   }
   vTaskDelay(pdMS_TO_TICKS(100));
+  #if defined(ARDUINO_ARCH_ESP32)
   ESP.restart();
+  #else
+  platform::restart();
+  #endif
 } // end of handleUpdate()
 
 void handleUpdateUpload(){
   HTTPUpload& upload = server.upload();
+  #if defined(ARDUINO_ARCH_RP2040)
+  platform::updateUpload(upload); // stages in LittleFS, rejects ESP32 images
+  #else
   if(upload.status == UPLOAD_FILE_START){
     Serial.printf("Update Start: %s\n", upload.filename.c_str());
     if(!Update.begin(UPDATE_SIZE_UNKNOWN)){
@@ -3054,6 +3110,7 @@ void handleUpdateUpload(){
       Update.printError(Serial);
     }
   }
+  #endif
 } // end of handleUpdateUpload()
 
 void handleSendCMD(){
@@ -4177,7 +4234,7 @@ void handleRoot(){
               <span id="fwReleaseInfo">
                 <button type="button" id="fwReleaseInfoBtn" aria-label="Show release notes">i</button>
                 <span id="fwReleasePopover">
-                  <a id="fwReleaseTitle" href="https://github.com/svirant/DonutShop/releases" target="_blank" rel="noopener noreferrer">Release notes</a>
+                  <a id="fwReleaseTitle" href="https://github.com/)rawliteral" DS_RELEASE_REPO R"rawliteral(/releases" target="_blank" rel="noopener noreferrer">Release notes</a>
                   <span id="fwReleaseNotes"></span>
                 </span>
               </span>
@@ -5485,7 +5542,8 @@ void handleRoot(){
   });
 
   /* GitHub firmware updater */
-  const DONUTSHOP_RELEASE_API = "https://api.github.com/repos/svirant/DonutShop/releases/latest";
+  const DONUTSHOP_RELEASE_API = "https://api.github.com/repos/)rawliteral" DS_RELEASE_REPO R"rawliteral(/releases/latest";
+  const DONUTSHOP_UPDATE_SUFFIX = ")rawliteral" DS_UPDATE_ASSET_SUFFIX R"rawliteral("; // per-target OTA asset, see platform.h
 
   let fwGithubRelease = null;
 
@@ -5778,15 +5836,15 @@ void handleRoot(){
       }
 
       // Only accept the versioned OTA application image
-      const expectedName = `DonutShop_v${tagVersion}_update.bin`;
+      const expectedName = `DonutShop_v${tagVersion}${DONUTSHOP_UPDATE_SUFFIX}`;
       const updateAsset = (release.assets || []).find(a => a.name === expectedName);
       if (!updateAsset) {
         throw new Error(`Release ${release.tag_name} is missing ${expectedName}`);
       }
 
       // Cross-check filename version against tag before ever offering install.
-      const fm = /^DonutShop_v(\d+\.\d+\.\d+)_update\.bin$/i.exec(updateAsset.name);
-      if (!fm || compareSemVer(fm[1], tagVersion) !== 0) {
+      const fm = /^DonutShop_v(\d+\.\d+\.\d+)_/i.exec(updateAsset.name);
+      if (!fm || !updateAsset.name.endsWith(DONUTSHOP_UPDATE_SUFFIX) || compareSemVer(fm[1], tagVersion) !== 0) {
         throw new Error(`Release asset/tag version mismatch: ${updateAsset.name} vs ${release.tag_name}`);
       }
 
@@ -5795,7 +5853,7 @@ void handleRoot(){
       document.getElementById("fwReleaseTitle").textContent =
         `Donut Shop v${tagVersion} release notes`;
       document.getElementById("fwReleaseTitle").href =
-        release.html_url || "https://github.com/svirant/DonutShop/releases";
+        release.html_url || "https://github.com/)rawliteral" DS_RELEASE_REPO R"rawliteral(/releases";
       document.getElementById("fwReleaseNotes").innerHTML =
         renderReleaseMarkdown(release.body || "");
       info.style.display = "inline-flex";
@@ -5826,7 +5884,7 @@ void handleRoot(){
     if (!fwGithubRelease) return;
 
     const {release, tagVersion} = fwGithubRelease;
-    const expectedName = `DonutShop_v${tagVersion}_update.bin`;
+    const expectedName = `DonutShop_v${tagVersion}${DONUTSHOP_UPDATE_SUFFIX}`;
     const updateAsset = release && Array.isArray(release.assets)
       ? release.assets.find(a => a && a.name === expectedName)
       : null;

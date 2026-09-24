@@ -115,7 +115,7 @@ For Consoles, quickest if IP address is used versus Domain address:
 
 If you have multiple consoles on when DonutShop is booting, the console furthest down the list wins. If more than 2 consoles are active when one is powered off, the console that was on prior takes over. (Order is remembered.)<br>
 
-There are a multiple moving parts with this setup, and if you have issues, please use the "DonutShop_usb-only-test.ino". More info in the troublehshooting section at the end.
+There are a multiple moving parts with this setup, and if you have issues, please use the "extras/DonutShop_usb-only-test/DonutShop_usb-only-test.ino". More info in the troublehshooting section at the end.
 
 ## Adding gameIDs, Consoles, and other Options
 
@@ -142,6 +142,40 @@ I recommend the [Official Arduino IDE and guide](https://docs.arduino.cc/softwar
 - USB Mode - "Debug mode (Hardware CDC)" / **Important that this is selected!**
 5. To flash the changes, select "Sketch" -> "Upload"
 
+
+## [Advanced] Building from source with arduino-cli
+The sketch builds for two boards from the same source. `sketch.yaml` pins the core, board options and library versions for each one:
+
+| Profile | Board | Output |
+| ------- | ----- | ------ |
+| `nano_esp32` (default) | Arduino Nano ESP32 | `DonutShop.ino.bin` |
+| `pico2w` | Raspberry Pi Pico 2 W (experimental) | `DonutShop.ino.bin` (OTA), `DonutShop.ino.uf2` (first install) |
+
+```
+arduino-cli compile --profile nano_esp32 --build-path build/nano_esp32 .
+arduino-cli compile --profile pico2w --build-path build/pico2w .
+```
+arduino-cli downloads the pinned cores and libraries the first time you build. Build the whole folder, not just `DonutShop.ino`: the board-specific code is in `platform.h` and `platform_rp2.cpp`. The Arduino IDE builds those files too when you open the sketch folder.
+
+## Raspberry Pi Pico 2 W (experimental)
+The Pico 2 W build does what the Nano ESP32 build does: gameID, WebCtl, OTA, Extron / TESmart / MT-VIKI serial, IR, and USB or HD-15 serial to the RT4K. It compiles in CI, but **it has not been tested on hardware yet.**
+
+**Pinout (GPx numbers)**
+| Function | Pico 2 W pins | Notes |
+| -------- | ------------- | ----- |
+| RT4K HD-15 serial | TX GP8, RX GP9 (UART1) | Add pull-ups to 3.3 V, see the RT4K wiki |
+| Extron sw1 | TX GP0, RX GP1 (UART0) | |
+| Extron sw2 | TX GP4, RX GP5 (PIO UART) | |
+| IR receiver / IR emitter | GP2 / GP3 | optional |
+| RGB status LED | R GP16, G GP17, B GP18 | optional, common anode (active low) |
+| RT4K USB | micro-USB port (USB host) | Needs a micro-USB OTG adapter that also supplies power |
+
+**Differences from the Nano ESP32**
+- **First install:** hold BOOTSEL while you plug the Pico into your computer, then copy `DonutShop_vX.X.X_pico2w.uf2` to the drive that appears.
+- **Updates:** "Check for Updates" in Settings works the same way. It installs the `DonutShop_vX.X.X_pico2w_update.bin` asset from the same GitHub release, which `.github/workflows/release-pico2w.yml` builds and attaches to every published release. If you update manually, use the `_pico2w_update.bin` file. The Pico refuses Nano ESP32 images.
+- **Wi-Fi setup:** the Pico joins the `DonutShop_Setup` access point the same way. If it cannot connect to the saved network within 20 seconds, the setup AP comes back. With a saved network and no one using the AP, it reboots after 5 minutes and tries the saved network again.
+- The Pico's USB port acts as the host for the RT4K, so it has no USB serial monitor.
+
 <br />
 
 ## Thank you!
@@ -155,7 +189,7 @@ I recommend the [Official Arduino IDE and guide](https://docs.arduino.cc/softwar
 The 🔵 and 🟢 leds indicate WiFi and usb serial/gameID lookup. This should help diagnose as a first step.
 
 If you are sure of these settings, and it still does not work, try the following to test the usb serial connection:
-  - Configure your Arduino Nano ESP32 with the provided "DonutShop_usb-only-test.ino". This is configured to only load "remote profile 8".
+  - Configure your Arduino Nano ESP32 with the provided "extras/DonutShop_usb-only-test/DonutShop_usb-only-test.ino". This is configured to only load "remote profile 8".
     - You can change the 8 to 1 - 9 if needed.
   - Verify that everything is connected with your OTG adapter and has power.
   - Press the reset button on top of the device and within a couple of seconds it should load the remote profile.

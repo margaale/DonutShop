@@ -1,0 +1,84 @@
+name: Release Pico 2 W firmware
+
+# Builds the Raspberry Pi Pico 2 W image for a published release and attaches:
+#   DonutShop_v<ver>_pico2w_update.bin  (OTA image used by the WebCtl "Check GitHub" updater)
+#   DonutShop_v<ver>_pico2w.uf2         (first install: hold BOOTSEL, copy to the RP2350 drive)
+# The firmware is built to check this same repository for updates, so it works unchanged in forks.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach to (e.g. v0.7.28)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  pico2w:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag $TAG is not vX.Y.Z; the WebCtl updater cannot compare it."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          path: DonutShop # sketch folder name must match DonutShop.ino
+
+      - name: Install Arduino CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/arduino-cli-bin"
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+            | BINDIR="$RUNNER_TEMP/arduino-cli-bin" sh -s 1.5.1
+          echo "$RUNNER_TEMP/arduino-cli-bin" >> "$GITHUB_PATH"
+
+      - name: Compile
+        working-directory: DonutShop
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The updater compares FIRMWARE_VERSION with the release tag, so the image must report the tag.
+          sed -i -E "s/^#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" DonutShop.ino
+          grep -q "^#define FIRMWARE_VERSION \"$VERSION\"" DonutShop.ino
+          arduino-cli compile --profile pico2w --build-path build/pico2w \
+            --build-property "compiler.cpp.extra_flags=-DDS_RELEASE_REPO_ID=$REPO" .
+
+      - name: Attach to release
+        working-directory: DonutShop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp build/pico2w/DonutShop.ino.bin "out/DonutShop_v${VERSION}_pico2w_update.bin"
+          cp build/pico2w/DonutShop.ino.uf2 "out/DonutShop_v${VERSION}_pico2w.uf2"
+          gh release upload "$TAG" out/* --repo "$REPO" --clobber

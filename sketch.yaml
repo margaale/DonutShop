@@ -1,0 +1,32 @@
+# arduino-cli build profiles (multi-target fork).
+#   arduino-cli compile --profile nano_esp32 .
+#   arduino-cli compile --profile pico2w .
+# Cores and libraries are pinned here; arduino-cli installs them on first use.
+
+profiles:
+  nano_esp32:
+    notes: Arduino Nano ESP32 (ESP32-S3), Espressif core. Same settings as the upstream README.
+    fqbn: esp32:esp32:nano_nora:PartitionScheme=spiffs,USBMode=hwcdc,DebugLevel=none
+    platforms:
+      - platform: esp32:esp32 (3.3.12)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+    libraries:
+      - IRremote (4.7.1)
+      - ArduinoJson (7.4.3)
+      - WiFiManager (2.0.17)
+      - EspUsbHost (2.10.0)
+
+  pico2w:
+    notes: >
+      Raspberry Pi Pico 2 W (RP2350 + CYW43439), arduino-pico core.
+      2 MB sketch / 2 MB LittleFS (OTA images are staged in LittleFS), FreeRTOS SMP,
+      native USB port as TinyUSB host for the RT4K.
+    fqbn: rp2040:rp2040:rpipico2w:flash=4194304_2097152,os=freertos,usbstack=tinyusb_host
+    platforms:
+      - platform: rp2040:rp2040 (6.1.1)
+        platform_index_url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+    libraries:
+      - IRremote (4.7.1)
+      - ArduinoJson (7.4.3)
+
+default_profile: nano_esp32
