@@ -45,6 +45,23 @@
 Rt4kUsbSerial CdcSerial;
 SerialPIO SerialPIO2(DS_EXTRON2_TX_PIN, DS_EXTRON2_RX_PIN);
 
+// CYW43 power pin (WL_REG_ON, GP23 on the Pico 2 W).
+#if defined(CYW43_DEFAULT_PIN_WL_REG_ON)
+#define DS_WL_REG_ON CYW43_DEFAULT_PIN_WL_REG_ON
+#else
+#define DS_WL_REG_ON 23
+#endif
+
+// A software reset restarts the RP2350 but may leave the CYW43 powered with its old state, and the
+// next boot then brings it up badly (slow init, "F2 not ready", a soft AP that never beacons).
+// Power the chip off first, so every reboot starts it from scratch like a cold boot.
+[[noreturn]] static void rebootClean(){
+  gpio_put(DS_WL_REG_ON, 0);
+  delay(150);
+  rp2040.reboot();
+  for(;;){}
+}
+
 ////////////////////////////////////////////////////////////////////////////////////
 // RT4K USB (Pico = USB host, RT4K = CDC-ACM / FTDI device)
 
@@ -220,7 +237,7 @@ bool platform::fsBegin(){
 }
 
 void platform::restart(){
-  rp2040.reboot();
+  rebootClean();
 }
 
 #if !DS_RT4K_USB
@@ -333,7 +350,8 @@ static const char* PORTAL_FLAG_FILE = "/portal.flag";
 
 #if !DS_RT4K_USB
 // Debug build: commands typed on the USB serial console. "portal" reboots into the setup portal
-// (keeping the saved network), "reboot" just reboots.
+// (keeping the saved network), "flag" only arms that for the next boot (e.g. a power cycle),
+// "reboot" just reboots.
 static void debugSerialCommands(){
   static char line[16];
   static uint8_t len = 0;
@@ -350,15 +368,20 @@ static void debugSerialCommands(){
       File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
       f.close();
       delay(100);
-      rp2040.reboot();
+      rebootClean();
+    }
+    else if(!strcmp(line, "flag")){
+      DS_LOG("command: flag, the next boot starts the setup portal");
+      File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
+      f.close();
     }
     else if(!strcmp(line, "reboot")){
       DS_LOG("command: reboot");
       delay(100);
-      rp2040.reboot();
+      rebootClean();
     }
     else if(line[0]){
-      DS_LOG("unknown command '%s' (portal, reboot)", line);
+      DS_LOG("unknown command '%s' (portal, flag, reboot)", line);
     }
   }
 }
@@ -522,10 +545,10 @@ static String scanNetworkList(){
     portal->handleClient();
     if(saved){
       delay(1500); // let the response go out
-      rp2040.reboot();
+      rebootClean();
     }
     // A router that is down at boot must not strand the device in the portal.
-    if(haveCreds && millis() - lastActivity > PORTAL_IDLE_REBOOT) rp2040.reboot();
+    if(haveCreds && millis() - lastActivity > PORTAL_IDLE_REBOOT) rebootClean();
     delay(2);
   }
 }
@@ -559,7 +582,7 @@ static void wifiBeginImpl(const char* hostname, const char* portalName){
   DS_LOG("join failed, rebooting into the portal");
   File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
   f.close();
-  rp2040.reboot();
+  rebootClean();
 }
 
 // setup() runs on arduino-pico's 4 KB loop() task stack, too small for Wi-Fi + LittleFS + the portal
