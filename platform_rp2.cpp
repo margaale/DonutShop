@@ -220,9 +220,11 @@ static const char* PORTAL_FLAG_FILE = "/portal.flag";
 
 static void blinkLed(uint32_t periodMs){
   static uint32_t last = 0;
+  static bool on = false; // not digitalRead(): the Pico 2 W LED sits on the CYW43 and does not read back
   if(millis() - last >= periodMs / 2){
     last = millis();
-    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    on = !on;
+    digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
   }
 }
 
