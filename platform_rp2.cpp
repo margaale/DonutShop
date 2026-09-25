@@ -190,6 +190,18 @@ static bool saveCreds(const String& ssid, const String& pass){
   return ok;
 }
 
+// Boot straight into the portal: the radio then starts from a clean state. Switching the CYW43
+// from STA (a failed join, or a scan) to AP in place left the AP without working DHCP.
+static const char* PORTAL_FLAG_FILE = "/portal.flag";
+
+static void blinkLed(uint32_t periodMs){
+  static uint32_t last = 0;
+  if(millis() - last >= periodMs / 2){
+    last = millis();
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  }
+}
+
 static bool connectSta(const char* hostname, const String& ssid, const String& pass){
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(hostname);
@@ -197,50 +209,28 @@ static bool connectSta(const char* hostname, const String& ssid, const String& p
   else WiFi.begin(ssid.c_str());
   uint32_t start = millis();
   while(WiFi.status() != WL_CONNECTED && millis() - start < STA_CONNECT_TIMEOUT){
-    delay(100);
+    blinkLed(200); // fast blink: joining
+    delay(20);
   }
+  digitalWrite(LED_BUILTIN, LOW);
   if(WiFi.status() != WL_CONNECTED) return false;
   WiFi.noLowPowerMode(); // same as esp_wifi_set_ps(WIFI_PS_NONE) on the ESP32
   return true;
 }
 
-static String htmlEscape(const String& in){
-  String out;
-  out.reserve(in.length() + 8);
-  for(size_t i = 0; i < in.length(); i++){
-    char c = in[i];
-    switch(c){
-      case '&': out += F("&amp;"); break;
-      case '<': out += F("&lt;"); break;
-      case '>': out += F("&gt;"); break;
-      case '"': out += F("&quot;"); break;
-      case '\'': out += F("&#39;"); break;
-      default: out += c;
-    }
-  }
-  return out;
-}
-
 [[noreturn]] static void runPortal(const char* portalName, bool haveCreds){
-  WiFi.mode(WIFI_STA);
-  int found = WiFi.scanNetworks(); // scan before going AP
-  String options;
-  for(int i = 0; i < found; i++){
-    String s = WiFi.SSID(i);
-    if(s.length()) options += "<option value=\"" + htmlEscape(s) + "\">";
-  }
-  WiFi.disconnect();
-
+  // Same sequence as arduino-pico's DNSServer/CaptivePortal example.
+  const IPAddress ip(192, 168, 4, 1);
   WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
   WiFi.softAP(portalName);
-  const IPAddress ip = WiFi.softAPIP();
 
   // Heap allocated: setup() runs on the 4 KB loop() task stack.
   DNSServer* dns = new DNSServer();
   dns->start(53, "*", ip);
   WebServer* portal = new WebServer(80);
 
-  const String page = String(F(
+  const String page = F(
     "<!DOCTYPE html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>DonutShop Wi-Fi setup</title><style>"
     "body{font-family:sans-serif;text-align:center;max-width:360px;margin:auto;padding:16px}"
@@ -248,8 +238,7 @@ static String htmlEscape(const String& in){
     "button{width:100%;padding:12px;background:#4CAF50;color:#fff;border:0;border-radius:4px;font-size:1em}"
     "</style></head><body><h2>DonutShop Wi-Fi setup</h2>"
     "<form method=POST action=/save>"
-    "<input name=s list=nets placeholder='Network (SSID)' required autocomplete=off>"
-    "<datalist id=nets>")) + options + F("</datalist>"
+    "<input name=s placeholder='Network name (SSID), 2.4 GHz' required autocomplete=off autocapitalize=none>"
     "<input name=p type=password placeholder='Password'>"
     "<button type=submit>Save</button></form></body></html>");
 
@@ -285,6 +274,7 @@ static String htmlEscape(const String& in){
   for(;;){
     dns->processNextRequest();
     portal->handleClient();
+    blinkLed(1000); // slow blink: setup portal active
     if(saved){
       delay(1500); // let the response go out
       rp2040.reboot();
@@ -299,8 +289,15 @@ void platform::wifiBegin(const char* hostname, const char* portalName){
   fsBegin(); // credentials live in LittleFS; setup() mounts it later again, which is a no-op
   String ssid, pass;
   const bool haveCreds = loadCreds(ssid, pass);
-  if(haveCreds && connectSta(hostname, ssid, pass)) return;
-  runPortal(portalName, haveCreds);
+  if(LittleFS.exists(PORTAL_FLAG_FILE)){
+    LittleFS.remove(PORTAL_FLAG_FILE);
+    runPortal(portalName, haveCreds);
+  }
+  if(!haveCreds) runPortal(portalName, false); // first boot: radio untouched so far
+  if(connectSta(hostname, ssid, pass)) return;
+  File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
+  f.close();
+  rp2040.reboot();
 }
 
 #endif // ARDUINO_ARCH_RP2040
