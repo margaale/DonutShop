@@ -135,9 +135,29 @@ void platform::restart(){
   rp2040.reboot();
 }
 
+#if !DS_RT4K_USB
+// Debug build: every 10 s, the numbers that tell a slow leak or a stack overflow from a Wi-Fi drop.
+static void debugHeartbeat(){
+  static uint32_t last = 0;
+  if(millis() - last < 10000) return;
+  last = millis();
+  auto stackFree = [](const char* name) -> long {
+    TaskHandle_t t = xTaskGetHandle(name);
+    return t ? (long)(uxTaskGetStackHighWaterMark(t) * sizeof(StackType_t)) : -1;
+  };
+  DS_LOG("alive: heap free %d, wifi %d rssi %ld ip %s, stack free DDloop %ld GIDloop %ld loop %ld",
+    rp2040.getFreeHeap(), (int)WiFi.status(), (long)WiFi.RSSI(), WiFi.localIP().toString().c_str(),
+    stackFree("DDloop"), stackFree("GIDloop"),
+    (long)(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
+}
+#endif
+
 void platform::loopHook(){
   if(usbStarted) usbService();
   MDNS.update();
+#if !DS_RT4K_USB
+  debugHeartbeat();
+#endif
   delay(1); // loop() outranks DDloop/GIDloop, it must block to let them run
 }
 
