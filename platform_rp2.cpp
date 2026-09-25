@@ -189,9 +189,10 @@ static void ledTask(void*){
       }
     }
 
-    // Rewrite periodically too: the sketch's own LED_BUILTIN writes (Nano logic) must not stick.
+    // Write on change, plus once a second so the sketch's own LED_BUILTIN writes (Nano logic) don't
+    // stick. Each write is a CYW43 bus transaction, so keep them rare.
     static bool lastOn = false;
-    if(!wrote || on != lastOn || now - lastWrite >= 50){
+    if(!wrote || on != lastOn || now - lastWrite >= 1000){
       digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
       lastOn = on;
       lastWrite = now;
