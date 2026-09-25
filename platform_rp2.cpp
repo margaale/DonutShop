@@ -553,24 +553,16 @@ static String scanNetworkList(){
   }
 }
 
-// Runs in setup(), on arduino-pico's 4 KB loop() task stack. Measured peak for this whole path,
-// portal included: ~1.1 KB on top of setup()'s ~0.7 KB.
-void platform::wifiBegin(const char* hostname, const char* portalName){
-#if !DS_RT4K_USB
-  Serial.begin(115200);
-  uint32_t t0 = millis();
-  while(!Serial && millis() - t0 < 8000) delay(10); // give the serial monitor time to attach
-  DS_LOG("DonutShop Pico 2 W debug build");
-  DS_LOG_STACK("setup");
-#endif
-  // Bring the CYW43 up (firmware download) here before the status LED task starts: the LED is on
-  // the CYW43, and LED writes run in the LWIP task. If the first CYW43 access happens there, the
+static void wifiBeginImpl(const char* hostname, const char* portalName){
+  DS_LOG_STACK("wifi task start");
+  // Bring the CYW43 up (firmware download) from this task before the status LED task starts: the LED
+  // is on the CYW43, and LED writes run in the LWIP task. If the first CYW43 access happens there, the
   // download waits on events that the busy LWIP task must deliver, and the chip is left half up
   // ("F2 not ready": no scan results, no AP, no LED).
   cyw43_arch_enable_sta_mode();
   DS_LOG("CYW43 up");
   ledBegin();
-  bool fsOk = fsBegin(); // credentials live in LittleFS; setup() mounts it later again, which is a no-op
+  bool fsOk = platform::fsBegin(); // credentials live in LittleFS; setup() mounts it later again, which is a no-op
   DS_LOG("LittleFS %s", fsOk ? "mounted" : "FAILED");
   String ssid, pass;
   const bool haveCreds = loadCreds(ssid, pass);
@@ -580,10 +572,9 @@ void platform::wifiBegin(const char* hostname, const char* portalName){
     LittleFS.remove(PORTAL_FLAG_FILE);
     runPortal(portalName, haveCreds);
   }
-  if(!haveCreds) runPortal(portalName, false); // first boot
+  if(!haveCreds) runPortal(portalName, false); // first boot: radio untouched so far
   if(connectSta(hostname, ssid, pass)){
     DS_LOG("connected, IP %s", WiFi.localIP().toString().c_str());
-    DS_LOG_STACK("wifi up");
     ledMode = LED_CONNECTED;
     ledWifiUp = true;
     return;
@@ -592,6 +583,44 @@ void platform::wifiBegin(const char* hostname, const char* portalName){
   File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
   f.close();
   rebootClean();
+}
+
+// Wi-Fi setup runs on a task of our own while setup() waits. Run directly in setup() (arduino-pico's
+// loop() task) the join hung on hardware, although the measured stack need (~1.1 KB peak, portal
+// included) fits its 4 KB; the cause is not known. 16 KB leaves room.
+static const configSTACK_DEPTH_TYPE WIFI_TASK_STACK = 4096; // words = 16 KB
+
+struct WifiTaskArgs {
+  const char* hostname;
+  const char* portalName;
+  TaskHandle_t waiter;
+};
+
+static void wifiTask(void* param){
+  WifiTaskArgs* args = static_cast<WifiTaskArgs*>(param);
+  wifiBeginImpl(args->hostname, args->portalName);
+  DS_LOG_STACK("wifi task end");
+  xTaskNotifyGive(args->waiter);
+  vTaskDelete(nullptr);
+}
+
+void platform::wifiBegin(const char* hostname, const char* portalName){
+#if !DS_RT4K_USB
+  Serial.begin(115200);
+  uint32_t t0 = millis();
+  while(!Serial && millis() - t0 < 8000) delay(10); // give the serial monitor time to attach
+  DS_LOG("DonutShop Pico 2 W debug build");
+  DS_LOG_STACK("setup");
+#endif
+  WifiTaskArgs args{hostname, portalName, xTaskGetCurrentTaskHandle()};
+  TaskHandle_t task = nullptr;
+  if(xTaskCreate(wifiTask, "DSWIFI", WIFI_TASK_STACK, &args, uxTaskPriorityGet(nullptr), &task) != pdPASS){
+    DS_LOG("could not create the Wi-Fi task, running inline");
+    wifiBeginImpl(hostname, portalName);
+    return;
+  }
+  vTaskCoreAffinitySet(task, 1 << 0); // same core as the loop() task it replaces
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 
 #endif // ARDUINO_ARCH_RP2040
