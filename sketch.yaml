@@ -31,9 +31,10 @@ profiles:
 
   pico2w_debug:
     notes: >
-      Pico 2 W diagnostic build: the USB port is a serial console (115200) with boot logs and
-      core debug output instead of the RT4K USB host. Everything else matches pico2w.
-    fqbn: rp2040:rp2040:rpipico2w:flash=4194304_2097152,os=freertos,usbstack=picosdk,dbgport=Serial,dbglvl=Core
+      Pico 2 W diagnostic build: the USB port is a serial console (115200) with DonutShop boot
+      logs, a 10 s heartbeat and panic messages, instead of the RT4K USB host. Core debug output
+      stays off (dbglvl=None): printing it from the lwIP thread is a suspect for lockups.
+    fqbn: rp2040:rp2040:rpipico2w:flash=4194304_2097152,os=freertos,usbstack=picosdk,dbgport=Serial,dbglvl=None
     platforms:
       - platform: rp2040:rp2040 (6.1.1)
         platform_index_url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
