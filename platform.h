@@ -59,7 +59,7 @@
 
 #include <FreeRTOS.h>
 #include <task.h>
-#include <ESP8266mDNS.h> // LEAmDNS, provides the global MDNS object
+#include <SimpleMDNS.h>  // global MDNS object; the one arduino-pico's ArduinoOTA links (LEAmDNS would clash)
 #include <Updater.h>     // provides the global Update object
 #include <WebServer.h>
 
@@ -75,7 +75,11 @@
 #define LED_RED           16   // Optional common-anode RGB LED (active low, analogWrite 255 = off)
 #define LED_GREEN         17
 #define LED_BLUE          18
-// LED_BUILTIN is the core's (the CYW43 LED); not redefined.
+// LED_BUILTIN is the core's (the CYW43 LED, pin 64); not redefined. It is not a real GPIO, so
+// IRremote's digitalWriteFast() feedback LED must stay off.
+#define NO_LED_FEEDBACK_CODE
+#define NO_LED_RECEIVE_FEEDBACK_CODE
+#define NO_LED_SEND_FEEDBACK_CODE
 
 // WebCtl "Check GitHub" updater asset: DonutShop_v<ver>_pico2w_update.bin
 // (built and attached to each release by .github/workflows/release-pico2w.yml)
