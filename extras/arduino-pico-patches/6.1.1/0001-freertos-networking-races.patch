@@ -184,7 +184,7 @@ index 8b25ff5..6684894 100644
  
  void WiFiServer::end() {
 diff --git a/libraries/WiFi/src/include/ClientContext.h b/libraries/WiFi/src/include/ClientContext.h
-index a72cc14..d2e7ba9 100644
+index a72cc14..838582a 100644
 --- a/libraries/WiFi/src/include/ClientContext.h
 +++ b/libraries/WiFi/src/include/ClientContext.h
 @@ -28,6 +28,11 @@ typedef void (*discard_cb_t)(void*, ClientContext*);
@@ -408,7 +408,7 @@ index a72cc14..d2e7ba9 100644
      }
  
      void setTimeout(int timeout_ms) {
-@@ -195,114 +224,136 @@ public:
+@@ -195,122 +224,206 @@ public:
          return _timeout_ms;
      }
  
@@ -473,7 +473,13 @@ index a72cc14..d2e7ba9 100644
      size_t getSize() const {
 -        if (!_rx_buf) {
 -            return 0;
--        }
++#ifdef __FREERTOS
++        // WiFiClient::read() calls available() before every byte; answer from the cache when it
++        // has data (under-reporting is fine, the rest shows up once it drains).
++        if (_cached()) {
++            return _cached();
+         }
++#endif
 +        return lwip_run([&]() -> size_t {
 +            if (!_rx_buf) {
 +                return 0;
@@ -486,8 +492,12 @@ index a72cc14..d2e7ba9 100644
  
      char read() {
 -        if (!_rx_buf) {
--            return 0;
--        }
++#ifdef __FREERTOS
++        if (!_cached() && !_fillCache()) {
+             return 0;
+         }
++        return _rx_cache[_rx_cache_pos++];
++#else
 +        return lwip_run([&]() -> char {
 +            if (!_rx_buf) {
 +                return 0;
@@ -500,6 +510,7 @@ index a72cc14..d2e7ba9 100644
 +            _consume(1);
 +            return c;
 +        });
++#endif
      }
  
      size_t read(char* dst, size_t size) {
@@ -509,11 +520,7 @@ index a72cc14..d2e7ba9 100644
 -
 -        size_t max_size = _rx_buf->tot_len - _rx_buf_offset;
 -        size = (size < max_size) ? size : max_size;
-+        return lwip_run([&]() -> size_t {
-+            if (!_rx_buf) {
-+                return 0;
-+            }
- 
+-
 -        DEBUGV(":rd %d, %d, %d", size, _rx_buf->tot_len, _rx_buf_offset);
 -        size_t size_read = 0;
 -        while (size) {
@@ -527,29 +534,28 @@ index a72cc14..d2e7ba9 100644
 -            size_read += copy_size;
 -        }
 -        return size_read;
-+            size_t max_size = _rx_buf->tot_len - _rx_buf_offset;
-+            size = (size < max_size) ? size : max_size;
-+
-+            DEBUGV(":rd %d, %d, %d", size, _rx_buf->tot_len, _rx_buf_offset);
-+            size_t size_read = 0;
-+            while (size) {
-+                size_t buf_size = _rx_buf->len - _rx_buf_offset;
-+                size_t copy_size = (size < buf_size) ? size : buf_size;
-+                DEBUGV(":rdi %d, %d", buf_size, copy_size);
-+                memcpy(dst, reinterpret_cast<char*>(_rx_buf->payload) + _rx_buf_offset, copy_size);
-+                dst += copy_size;
-+                _consume(copy_size);
-+                size -= copy_size;
-+                size_read += copy_size;
-+            }
-+            return size_read;
-+        });
++        size_t fromCache = 0;
++#ifdef __FREERTOS
++        fromCache = std::min(size, _cached());
++        memcpy(dst, _rx_cache + _rx_cache_pos, fromCache);
++        _rx_cache_pos += fromCache;
++        if (fromCache == size) {
++            return fromCache;
++        }
++        dst += fromCache;
++        size -= fromCache;
++#endif
++        return fromCache + _readRx(dst, size);
      }
  
      char peek() const {
 -        if (!_rx_buf) {
--            return 0;
--        }
++#ifdef __FREERTOS
++        if (!_cached() && !_fillCache()) {
+             return 0;
+         }
++        return _rx_cache[_rx_cache_pos];
++#else
 +        return lwip_run([&]() -> char {
 +            if (!_rx_buf) {
 +                return 0;
@@ -558,12 +564,19 @@ index a72cc14..d2e7ba9 100644
 -        return reinterpret_cast<char*>(_rx_buf->payload)[_rx_buf_offset];
 +            return reinterpret_cast<char*>(_rx_buf->payload)[_rx_buf_offset];
 +        });
++#endif
      }
  
      size_t peekBytes(char *dst, size_t size) const {
 -        if (!_rx_buf) {
 -            return 0;
--        }
++#ifdef __FREERTOS
++        if (_cached()) {
++            size_t n = std::min(size, _cached());
++            memcpy(dst, _rx_cache + _rx_cache_pos, n);
++            return n;
+         }
++#endif
 +        return lwip_run([&]() -> size_t {
 +            if (!_rx_buf) {
 +                return 0;
@@ -600,6 +613,9 @@ index a72cc14..d2e7ba9 100644
 -        pbuf_free(_rx_buf);
 -        _rx_buf = 0;
 -        _rx_buf_offset = 0;
++#ifdef __FREERTOS
++        _rx_cache_pos = _rx_cache_len = 0;
++#endif
 +        lwip_run([&]() {
 +            DEBUGV(":dsrcv %d", _rx_buf ? _rx_buf->tot_len : 0);
 +            if (!_rx_buf) {
@@ -612,10 +628,51 @@ index a72cc14..d2e7ba9 100644
 +            _rx_buf = 0;
 +            _rx_buf_offset = 0;
 +        });
++    }
++
++protected:
++    // Takes up to size bytes out of the receive pbuf chain, in one trip to the LWIP task.
++    size_t _readRx(char* dst, size_t size) {
++        return lwip_run([&]() -> size_t {
++            if (!_rx_buf) {
++                return 0;
++            }
++
++            size_t max_size = _rx_buf->tot_len - _rx_buf_offset;
++            size = (size < max_size) ? size : max_size;
++
++            DEBUGV(":rd %d, %d, %d", size, _rx_buf->tot_len, _rx_buf_offset);
++            size_t size_read = 0;
++            while (size) {
++                size_t buf_size = _rx_buf->len - _rx_buf_offset;
++                size_t copy_size = (size < buf_size) ? size : buf_size;
++                DEBUGV(":rdi %d, %d", buf_size, copy_size);
++                memcpy(dst, reinterpret_cast<char*>(_rx_buf->payload) + _rx_buf_offset, copy_size);
++                dst += copy_size;
++                _consume(copy_size);
++                size -= copy_size;
++                size_read += copy_size;
++            }
++            return size_read;
++        });
++    }
++
++#ifdef __FREERTOS
++    size_t _cached() const {
++        return _rx_cache_len - _rx_cache_pos;
      }
  
++    // Refills the (empty) read cache; returns the number of bytes now cached.
++    size_t _fillCache() const {
++        _rx_cache_pos = 0;
++        _rx_cache_len = (uint16_t) const_cast<ClientContext*>(this)->_readRx(_rx_cache, RX_CACHE_SIZE);
++        return _rx_cache_len;
++    }
++#endif
++
++public:
      bool wait_until_acked(int max_wait_ms = WIFICLIENT_MAX_FLUSH_WAIT_MS) {
-@@ -310,7 +361,7 @@ public:
+         // https://github.com/esp8266/Arduino/pull/3967#pullrequestreview-83451496
          // option 1 done
          // option 2 / _write_some() not necessary since _datasource is always nullptr here
  
@@ -624,7 +681,7 @@ index a72cc14..d2e7ba9 100644
              return true;
          }
  
-@@ -328,13 +379,24 @@ public:
+@@ -328,13 +441,24 @@ public:
                  return false;
              }
  
@@ -653,7 +710,7 @@ index a72cc14..d2e7ba9 100644
              if (sndbuf != prevsndbuf) {
                  // send buffer has changed (or first iteration)
                  prevsndbuf = sndbuf;
-@@ -344,9 +406,7 @@ public:
+@@ -344,9 +468,7 @@ public:
  
              // esp_yield(); // from sys or os context
  
@@ -664,7 +721,7 @@ index a72cc14..d2e7ba9 100644
                  break;
              }
          }
-@@ -356,23 +416,25 @@ public:
+@@ -356,23 +478,25 @@ public:
      }
  
      uint8_t state() const {
@@ -697,7 +754,7 @@ index a72cc14..d2e7ba9 100644
              return 0;
          }
          size_t sent = 0;
-@@ -399,30 +461,43 @@ public:
+@@ -399,30 +523,43 @@ public:
      }
  
      void keepAlive(uint16_t idle_sec = TCP_DEFAULT_KEEPALIVE_IDLE_SEC, uint16_t intv_sec = TCP_DEFAULT_KEEPALIVE_INTERVAL_SEC, uint8_t count = TCP_DEFAULT_KEEPALIVE_COUNT) {
@@ -753,14 +810,18 @@ index a72cc14..d2e7ba9 100644
      }
  
      bool getSync() const {
-@@ -436,23 +511,31 @@ public:
+@@ -436,23 +573,47 @@ public:
      // return a pointer to available data buffer (size = peekAvailable())
      // semantic forbids any kind of read() before calling peekConsume()
      const char* peekBuffer() {
 -        if (!_rx_buf) {
 -            return nullptr;
--        }
++#ifdef __FREERTOS
++        if (_cached()) {
++            return _rx_cache + _rx_cache_pos;
+         }
 -        return (const char*)_rx_buf->payload + _rx_buf_offset;
++#endif
 +        return lwip_run([&]() -> const char* {
 +            if (!_rx_buf) {
 +                return nullptr;
@@ -773,8 +834,12 @@ index a72cc14..d2e7ba9 100644
      size_t peekAvailable() {
 -        if (!_rx_buf) {
 -            return 0;
--        }
++#ifdef __FREERTOS
++        if (_cached()) {
++            return _cached();
+         }
 -        return _rx_buf->len - _rx_buf_offset;
++#endif
 +        return lwip_run([&]() -> size_t {
 +            if (!_rx_buf) {
 +                return 0;
@@ -786,6 +851,12 @@ index a72cc14..d2e7ba9 100644
      // consume bytes after use (see peekBuffer)
      void peekConsume(size_t consume) {
 -        _consume(consume);
++#ifdef __FREERTOS
++        if (_cached()) {
++            _rx_cache_pos += std::min(consume, _cached());
++            return;
++        }
++#endif
 +        lwip_run([&]() {
 +            if (_rx_buf) {
 +                _consume(consume);
@@ -794,7 +865,7 @@ index a72cc14..d2e7ba9 100644
      }
  
  protected:
-@@ -478,20 +561,29 @@ protected:
+@@ -478,20 +639,29 @@ protected:
          _written = 0;
          _op_start_time = millis();
          do {
@@ -833,7 +904,7 @@ index a72cc14..d2e7ba9 100644
              // will resume on timeout or when _write_some_from_cb or _notify_error fires
              // give scheduled functions a chance to run (e.g. Ethernet uses recurrent)
              esp_delay(_timeout_ms, [this]() {
-@@ -740,8 +832,9 @@ private:
+@@ -740,11 +910,22 @@ private:
      size_t _written = 0;
      uint32_t _timeout_ms = 5000;
      uint32_t _op_start_time = 0;
@@ -845,6 +916,19 @@ index a72cc14..d2e7ba9 100644
  
      int8_t _refcnt;
      ClientContext* _next;
+ 
+     bool _sync;
++
++#ifdef __FREERTOS
++    // Byte-wise readers (read(), peek(), Stream::readStringUntil(), the WebServer upload parser)
++    // would otherwise make one trip to the LWIP task per byte; data is taken out of _rx_buf up to
++    // this many bytes at a time instead. Used by the application task only.
++    static constexpr size_t RX_CACHE_SIZE = 256;
++    mutable char _rx_cache[RX_CACHE_SIZE];
++    mutable uint16_t _rx_cache_pos = 0;
++    mutable uint16_t _rx_cache_len = 0;
++#endif
+ };
 diff --git a/libraries/WiFi/src/include/UdpContext.h b/libraries/WiFi/src/include/UdpContext.h
 index c5a8119..7adc12b 100644
 --- a/libraries/WiFi/src/include/UdpContext.h
