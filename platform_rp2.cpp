@@ -29,6 +29,8 @@
 #include <semphr.h>
 #include <stream_buffer.h>
 #include <lwip_wrap.h> // lwip_callback()
+#include <algorithm>
+#include <vector>
 
 // Boot logs on the USB serial console, debug build only. (This file does not see the sketch's
 // "#define Serial Serial2", so Serial here is the USB CDC port.)
@@ -259,7 +261,54 @@ static void startSoftAp(void* param){
   a->ok = WiFi.softAP(a->name);
 }
 
+static String htmlEscape(const String& in){
+  String out;
+  out.reserve(in.length() + 8);
+  for(size_t i = 0; i < in.length(); i++){
+    char c = in[i];
+    switch(c){
+      case '&': out += F("&amp;"); break;
+      case '<': out += F("&lt;"); break;
+      case '>': out += F("&gt;"); break;
+      case '"': out += F("&quot;"); break;
+      case '\'': out += F("&#39;"); break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+// Nearby networks as tappable rows (like WiFiManager): strongest first, one row per SSID.
+// Runs before the AP starts; scanning uses the STA interface, which startSoftAp() tears down.
+static String scanNetworkList(){
+  WiFi.mode(WIFI_STA);
+  const int found = WiFi.scanNetworks();
+  DS_LOG("scan: %d network(s)", found);
+  struct Net { String ssid; int32_t rssi; bool open; };
+  std::vector<Net> nets;
+  for(int i = 0; i < found; i++){
+    String ssid = WiFi.SSID(i);
+    if(ssid.length() == 0) continue; // hidden network
+    const int32_t rssi = WiFi.RSSI(i);
+    auto it = std::find_if(nets.begin(), nets.end(), [&](const Net& n){ return n.ssid == ssid; });
+    if(it == nets.end()) nets.push_back({ssid, rssi, WiFi.encryptionType(i) == ENC_TYPE_NONE});
+    else if(rssi > it->rssi) it->rssi = rssi;
+  }
+  std::sort(nets.begin(), nets.end(), [](const Net& a, const Net& b){ return a.rssi > b.rssi; });
+  String rows;
+  const size_t maxRows = 20;
+  for(size_t i = 0; i < nets.size() && i < maxRows; i++){
+    const int32_t q = constrain(2 * (nets[i].rssi + 100), 0, 100); // rough dBm -> %
+    rows += "<a href=# onclick='return pick(this)'>" + htmlEscape(nets[i].ssid) + "<span>" +
+            (nets[i].open ? "" : "&#128274; ") + String(q) + "%</span></a>";
+  }
+  if(rows.length() == 0) rows = F("<p>No networks found. Type the name below.</p>");
+  return rows;
+}
+
 [[noreturn]] static void runPortal(const char* portalName, bool haveCreds){
+  const String networks = scanNetworkList();
+
   // Same sequence as arduino-pico's DNSServer/CaptivePortal example.
   DS_LOG("starting AP %s", portalName);
   SoftApArgs ap{portalName, IPAddress(192, 168, 4, 1), false};
@@ -276,13 +325,18 @@ static void startSoftAp(void* param){
   dns->start(53, "*", ip);
   WebServer* portal = new WebServer(80);
 
-  const String page = F(
+  const String page = String(F(
     "<!DOCTYPE html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>DonutShop Wi-Fi setup</title><style>"
     "body{font-family:sans-serif;text-align:center;max-width:360px;margin:auto;padding:16px}"
     "input{width:100%;box-sizing:border-box;padding:10px;margin:6px 0}"
     "button{width:100%;padding:12px;background:#4CAF50;color:#fff;border:0;border-radius:4px;font-size:1em}"
-    "</style></head><body><h2>DonutShop Wi-Fi setup</h2>"
+    "#nets a{display:flex;justify-content:space-between;padding:10px 4px;border-bottom:1px solid #ddd;"
+    "color:inherit;text-decoration:none;text-align:left}"
+    "#nets span{white-space:nowrap;margin-left:8px;color:#666}"
+    "</style><script>function pick(a){document.getElementsByName('s')[0].value=a.firstChild.nodeValue;"
+    "document.getElementsByName('p')[0].focus();return false;}</script>"
+    "</head><body><h2>DonutShop Wi-Fi setup</h2><div id=nets>")) + networks + F("</div>"
     "<form method=POST action=/save>"
     "<input name=s placeholder='Network name (SSID), 2.4 GHz' required autocomplete=off autocapitalize=none>"
     "<input name=p type=password placeholder='Password'>"
