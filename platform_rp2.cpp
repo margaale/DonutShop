@@ -387,9 +387,37 @@ static void debugSerialCommands(){
 }
 #endif
 
+// arduino-pico's CYW43::begin() can wait forever when a join never completes (it loops until the
+// link state changes), and everything that goes through the LWIP task, the LED included, stalls
+// with it. So a join is guarded from outside: a marker file says a join is in progress, and a task
+// that touches neither lwIP nor the CYW43 bus power-cycles and reboots if it takes too long. The
+// next boot finds the marker and opens the setup portal instead of trying again.
+static const char* JOIN_PENDING_FILE = "/join.pending";
+static const uint32_t JOIN_WATCHDOG_MS = 60000;
+static volatile uint32_t joinDeadline = 0; // millis(); 0 = no join in progress
+
+static void joinWatchdogTask(void*){
+  for(;;){
+    const uint32_t deadline = joinDeadline;
+    if(deadline && (int32_t)(millis() - deadline) > 0){
+      DS_LOG("join did not finish in %lu s, rebooting into the portal", (unsigned long)(JOIN_WATCHDOG_MS / 1000));
+      rebootClean();
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
 static bool connectSta(const char* hostname, const String& ssid, const String& pass){
   DS_LOG("joining %s", ssid.c_str());
   ledMode = LED_JOINING;
+  File marker = LittleFS.open(JOIN_PENDING_FILE, "w");
+  marker.close();
+  static bool watchdogStarted = false;
+  if(!watchdogStarted){
+    watchdogStarted = true;
+    xTaskCreate(joinWatchdogTask, "DSJOINWD", 512, nullptr, tskIDLE_PRIORITY + 3, nullptr);
+  }
+  joinDeadline = millis() + JOIN_WATCHDOG_MS;
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(hostname);
   if(pass.length()) WiFi.begin(ssid.c_str(), pass.c_str());
@@ -398,7 +426,9 @@ static bool connectSta(const char* hostname, const String& ssid, const String& p
   while(WiFi.status() != WL_CONNECTED && millis() - start < STA_CONNECT_TIMEOUT){
     delay(100);
   }
-  if(WiFi.status() != WL_CONNECTED) return false;
+  joinDeadline = 0;
+  if(WiFi.status() != WL_CONNECTED) return false; // the marker stays: next boot opens the portal
+  LittleFS.remove(JOIN_PENDING_FILE);
   WiFi.noLowPowerMode(); // same as esp_wifi_set_ps(WIFI_PS_NONE) on the ESP32
   return true;
 }
@@ -567,9 +597,12 @@ static void wifiBeginImpl(const char* hostname, const char* portalName){
   String ssid, pass;
   const bool haveCreds = loadCreds(ssid, pass);
   DS_LOG("saved network: %s", haveCreds ? ssid.c_str() : "(none)");
-  if(LittleFS.exists(PORTAL_FLAG_FILE)){
-    DS_LOG("portal flag set, starting portal");
+  const bool portalFlag = LittleFS.exists(PORTAL_FLAG_FILE);
+  const bool joinPending = LittleFS.exists(JOIN_PENDING_FILE);
+  if(portalFlag || joinPending){
+    DS_LOG("%s, starting portal", portalFlag ? "portal flag set" : "last join never finished");
     LittleFS.remove(PORTAL_FLAG_FILE);
+    LittleFS.remove(JOIN_PENDING_FILE);
     runPortal(portalName, haveCreds);
   }
   if(!haveCreds) runPortal(portalName, false); // first boot: radio untouched so far
@@ -580,9 +613,7 @@ static void wifiBeginImpl(const char* hostname, const char* portalName){
     return;
   }
   DS_LOG("join failed, rebooting into the portal");
-  File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
-  f.close();
-  rebootClean();
+  rebootClean(); // JOIN_PENDING_FILE is still there
 }
 
 // Wi-Fi setup runs on a task of our own while setup() waits. Run directly in setup() (arduino-pico's
