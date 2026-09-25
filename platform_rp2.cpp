@@ -29,6 +29,7 @@
 #include <semphr.h>
 #include <stream_buffer.h>
 #include <lwip_wrap.h> // lwip_callback()
+#include <pico/cyw43_arch.h>
 #include <algorithm>
 #include <vector>
 
@@ -530,6 +531,13 @@ static String scanNetworkList(){
 
 static void wifiBeginImpl(const char* hostname, const char* portalName){
   DS_LOG_STACK("wifi task start");
+  // Bring the CYW43 up (firmware download) from this task before the status LED task starts: the LED
+  // is on the CYW43, and LED writes run in the LWIP task. If the first CYW43 access happens there, the
+  // download waits on events that the busy LWIP task must deliver, and the chip is left half up
+  // ("F2 not ready": no scan results, no AP, no LED).
+  cyw43_arch_enable_sta_mode();
+  DS_LOG("CYW43 up");
+  ledBegin();
   bool fsOk = platform::fsBegin(); // credentials live in LittleFS; setup() mounts it later again, which is a no-op
   DS_LOG("LittleFS %s", fsOk ? "mounted" : "FAILED");
   String ssid, pass;
@@ -572,7 +580,6 @@ static void wifiTask(void* param){
 }
 
 void platform::wifiBegin(const char* hostname, const char* portalName){
-  ledBegin();
 #if !DS_RT4K_USB
   Serial.begin(115200);
   uint32_t t0 = millis();
