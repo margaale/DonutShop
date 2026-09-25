@@ -335,6 +335,7 @@ static String scanNetworkList(){
   // arduino-pico <= 6.1.1 FreeRTOS bug: bringing the AP netif up from a user task ends in
   // netif_set_default(), which the lwIP thread does not implement ("Unimplemented LWIP thread
   // action" panic). Inside the lwIP thread the wrapped lwIP calls run directly, so start it there.
+  // extras/arduino-pico-patches fixes the core; this keeps unpatched cores working too.
   lwip_callback(startSoftAp, &ap);
   const IPAddress ip = ap.ip;
   DS_LOG("softAP %s, IP %s", ap.ok ? "ok" : "FAILED", WiFi.softAPIP().toString().c_str());

@@ -38,7 +38,17 @@ jobs:
           path: |
             ~/.arduino15
             ~/Arduino/libraries
-          key: arduino-${{ matrix.profile }}-${{ hashFiles('DonutShop/sketch.yaml') }}
+          key: arduino-${{ matrix.profile }}-${{ hashFiles('DonutShop/sketch.yaml', 'DonutShop/extras/arduino-pico-patches/**') }}
+
+      - name: Install core and apply arduino-pico patches
+        if: startsWith(matrix.profile, 'pico2w')
+        working-directory: DonutShop
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Resolving the profile installs the pinned core; then patch it (see extras/arduino-pico-patches).
+          arduino-cli compile --profile "${{ matrix.profile }}"             --build-path "build/${{ matrix.profile }}" --only-compilation-database . > /dev/null
+          bash extras/arduino-pico-patches/apply.sh
 
       - name: Compile
         working-directory: DonutShop

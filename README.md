@@ -158,7 +158,9 @@ arduino-cli compile --profile pico2w --build-path build/pico2w .
 arduino-cli downloads the pinned cores and libraries the first time you build. Build the whole folder, not just `DonutShop.ino`: the board-specific code is in `platform.h` and `platform_rp2.cpp`. The Arduino IDE builds those files too when you open the sketch folder.
 
 ## Raspberry Pi Pico 2 W (experimental)
-The Pico 2 W build does what the Nano ESP32 build does: gameID, WebCtl, OTA, Extron / TESmart / MT-VIKI serial, IR, and USB or HD-15 serial to the RT4K. It compiles in CI, but **it has not been tested on hardware yet.**
+The Pico 2 W build does what the Nano ESP32 build does: gameID, WebCtl, OTA, Extron / TESmart / MT-VIKI serial, IR, and USB or HD-15 serial to the RT4K. It compiles in CI, but **it has not been tested on hardware yet.**
+
+The Pico build needs a patched arduino-pico core: 6.1.1 has FreeRTOS networking bugs that crash or hang the board. CI applies the patch automatically. For local builds, see [extras/arduino-pico-patches](extras/arduino-pico-patches/README.md).
 
 **Pinout (GPx numbers)**
 | Function | Pico 2 W pins | Notes |

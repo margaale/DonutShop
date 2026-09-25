@@ -65,6 +65,9 @@ jobs:
           # The updater compares FIRMWARE_VERSION with the release tag, so the image must report the tag.
           sed -i -E "s/^#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" DonutShop.ino
           grep -q "^#define FIRMWARE_VERSION \"$VERSION\"" DonutShop.ino
+          # Install the pinned core, then patch it (see extras/arduino-pico-patches).
+          arduino-cli compile --profile pico2w --build-path build/pico2w --only-compilation-database . > /dev/null
+          bash extras/arduino-pico-patches/apply.sh
           arduino-cli compile --profile pico2w --build-path build/pico2w \
             --build-property "compiler.cpp.extra_flags=-DDS_RELEASE_REPO_ID=$REPO" .
 

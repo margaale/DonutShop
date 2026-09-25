@@ -1,0 +1,1309 @@
+diff --git a/cores/rp2040/freertos/freertos-lwip.cpp b/cores/rp2040/freertos/freertos-lwip.cpp
+index b66f071..23f0b31 100644
+--- a/cores/rp2040/freertos/freertos-lwip.cpp
++++ b/cores/rp2040/freertos/freertos-lwip.cpp
+@@ -460,6 +460,11 @@ static void lwipThread(void *params) {
+                 __real_netif_remove(r->netif);
+                 break;
+             }
++            case __netif_set_default: {
++                __netif_set_default_req *r = (__netif_set_default_req *)w.req;
++                __real_netif_set_default(r->netif);
++                break;
++            }
+             case __netif_set_link_up: {
+                 __netif_set_link_up_req *r = (__netif_set_link_up_req *)w.req;
+                 __real_netif_set_link_up(r->netif);
+diff --git a/libraries/WiFi/src/WiFiServer.cpp b/libraries/WiFi/src/WiFiServer.cpp
+index 8b25ff5..6684894 100644
+--- a/libraries/WiFi/src/WiFiServer.cpp
++++ b/libraries/WiFi/src/WiFiServer.cpp
+@@ -56,29 +56,33 @@ void WiFiServer::begin(uint16_t port, uint8_t backlog) {
+     }
+     _port = port;
+ 
+-    tcp_pcb* pcb = tcp_new();
+-    if (!pcb) {
+-        return;
+-    }
++    // Set up the listening pcb in one step: incoming connections can be accepted (in the LWIP
++    // task) as soon as tcp_accept() is called.
++    lwip_run([&]() {
++        tcp_pcb* pcb = tcp_new();
++        if (!pcb) {
++            return;
++        }
+ 
+-    pcb->so_options |= SOF_REUSEADDR;
++        pcb->so_options |= SOF_REUSEADDR;
+ 
+-    // (IPAddress _addr) operator-converted to (const ip_addr_t*)
+-    if (tcp_bind(pcb, _addr, _port) != ERR_OK) {
+-        tcp_close(pcb);
+-        return;
+-    }
++        // (IPAddress _addr) operator-converted to (const ip_addr_t*)
++        if (tcp_bind(pcb, _addr, _port) != ERR_OK) {
++            tcp_close(pcb);
++            return;
++        }
+ 
+-    tcp_pcb* listen_pcb = tcp_listen_with_backlog(pcb, backlog);
++        tcp_pcb* listen_pcb = tcp_listen_with_backlog(pcb, backlog);
+ 
+-    if (!listen_pcb) {
+-        tcp_close(pcb);
+-        return;
+-    }
+-    _listen_pcb = listen_pcb;
+-    _port = _listen_pcb->local_port;
+-    tcp_arg(listen_pcb, (void*) this);
+-    tcp_accept(listen_pcb, &WiFiServer::_s_accept);
++        if (!listen_pcb) {
++            tcp_close(pcb);
++            return;
++        }
++        _listen_pcb = listen_pcb;
++        _port = _listen_pcb->local_port;
++        tcp_arg(listen_pcb, (void*) this);
++        tcp_accept(listen_pcb, &WiFiServer::_s_accept);
++    });
+ }
+ 
+ void WiFiServer::setNoDelay(bool nodelay) {
+@@ -93,29 +97,34 @@ bool WiFiServer::getNoDelay() {
+     }
+ }
+ 
++// _unclaimed is appended to by _accept() in the LWIP task, so it is only walked or popped inside lwip_run().
++
+ bool WiFiServer::hasClient() {
+-    if (_unclaimed) {
+-        return true;
+-    }
+-    return false;
++    return lwip_run([&]() -> bool {
++        return _unclaimed != nullptr;
++    });
+ }
+ 
+ size_t WiFiServer::hasClientData() {
+-    ClientContext *next = _unclaimed;
+-    while (next) {
+-        size_t s = next->getSize();
+-        // return the amount of data available from the first connection that has any
+-        if (s) {
+-            return s;
++    return lwip_run([&]() -> size_t {
++        ClientContext *next = _unclaimed;
++        while (next) {
++            size_t s = next->getSize();
++            // return the amount of data available from the first connection that has any
++            if (s) {
++                return s;
++            }
++            next = next->next();
+         }
+-        next = next->next();
+-    }
+-    return 0;
++        return 0;
++    });
+ }
+ 
+ bool WiFiServer::hasMaxPendingClients() {
+ #if TCP_LISTEN_BACKLOG
+-    return ((struct tcp_pcb_listen *)_listen_pcb)->accepts_pending >= MAX_PENDING_CLIENTS_PER_PORT;
++    return lwip_run([&]() -> bool {
++        return _listen_pcb && ((struct tcp_pcb_listen *)_listen_pcb)->accepts_pending >= MAX_PENDING_CLIENTS_PER_PORT;
++    });
+ #else
+     return false;
+ #endif
+@@ -127,8 +136,12 @@ WiFiClient WiFiServer::available(byte* status) {
+ }
+ 
+ WiFiClient WiFiServer::accept() {
+-    if (_unclaimed) {
+-        WiFiClient result(_unclaimed);
++    WiFiClient result;
++    const bool got = lwip_run([&]() -> bool {
++        if (!_unclaimed) {
++            return false;
++        }
++        result = WiFiClient(_unclaimed);
+ 
+         // pcb can be null when peer has already closed the connection
+         if (_unclaimed->getPCB()) {
+@@ -137,18 +150,22 @@ WiFiClient WiFiServer::accept() {
+         }
+ 
+         _unclaimed = _unclaimed->next();
++        return true;
++    });
++    if (got) {
+         result.setNoDelay(getNoDelay());
+         DEBUGV("WS:av status=%d WCav=%d", result.status(), result.available());
+-        return result;
+     }
+-    return WiFiClient();
++    return result;
+ }
+ 
+ uint8_t WiFiServer::status()  {
+-    if (!_listen_pcb) {
+-        return CLOSED;
+-    }
+-    return _listen_pcb->state;
++    return lwip_run([&]() -> uint8_t {
++        if (!_listen_pcb) {
++            return CLOSED;
++        }
++        return _listen_pcb->state;
++    });
+ }
+ 
+ uint16_t WiFiServer::port() const {
+@@ -156,11 +173,13 @@ uint16_t WiFiServer::port() const {
+ }
+ 
+ void WiFiServer::close() {
+-    if (!_listen_pcb) {
+-        return;
+-    }
+-    tcp_close(_listen_pcb);
+-    _listen_pcb = nullptr;
++    lwip_run([&]() {
++        if (!_listen_pcb) {
++            return;
++        }
++        tcp_close(_listen_pcb);
++        _listen_pcb = nullptr;
++    });
+ }
+ 
+ void WiFiServer::end() {
+diff --git a/libraries/WiFi/src/include/ClientContext.h b/libraries/WiFi/src/include/ClientContext.h
+index a72cc14..d2e7ba9 100644
+--- a/libraries/WiFi/src/include/ClientContext.h
++++ b/libraries/WiFi/src/include/ClientContext.h
+@@ -28,6 +28,11 @@ typedef void (*discard_cb_t)(void*, ClientContext*);
+ 
+ #include <assert.h>
+ #include "lwip/timeouts.h"
++#include "lwip_run.h"
++
++// Every method below that touches _pcb, _rx_buf or the connect/send flags runs its body through
++// lwip_run(), so under FreeRTOS it cannot interleave with this object's lwIP callbacks (which run
++// in the LWIP task). Waits (connect, send, flush) stay outside lwip_run().
+ 
+ //#include <esp_priv.h>
+ //#include <coredecls.h>
+@@ -64,37 +69,41 @@ public:
+     }
+ 
+     err_t abort() {
+-        if (_pcb) {
+-            DEBUGV(":abort");
+-            tcp_arg(_pcb, nullptr);
+-            tcp_sent(_pcb, nullptr);
+-            tcp_recv(_pcb, nullptr);
+-            tcp_err(_pcb, nullptr);
+-            tcp_poll(_pcb, nullptr, 0);
+-            tcp_abort(_pcb);
+-            _pcb = nullptr;
+-        }
+-        return ERR_ABRT;
++        return lwip_run([&]() -> err_t {
++            if (_pcb) {
++                DEBUGV(":abort");
++                tcp_arg(_pcb, nullptr);
++                tcp_sent(_pcb, nullptr);
++                tcp_recv(_pcb, nullptr);
++                tcp_err(_pcb, nullptr);
++                tcp_poll(_pcb, nullptr, 0);
++                tcp_abort(_pcb);
++                _pcb = nullptr;
++            }
++            return ERR_ABRT;
++        });
+     }
+ 
+     err_t close() {
+-        err_t err = ERR_OK;
+-        if (_pcb) {
+-            DEBUGV(":close");
+-            tcp_arg(_pcb, nullptr);
+-            tcp_sent(_pcb, nullptr);
+-            tcp_recv(_pcb, nullptr);
+-            tcp_err(_pcb, nullptr);
+-            tcp_poll(_pcb, nullptr, 0);
+-            err = tcp_close(_pcb);
+-            if (err != ERR_OK) {
+-                DEBUGV(":tc err %d", (int) err);
+-                tcp_abort(_pcb);
+-                err = ERR_ABRT;
++        return lwip_run([&]() -> err_t {
++            err_t err = ERR_OK;
++            if (_pcb) {
++                DEBUGV(":close");
++                tcp_arg(_pcb, nullptr);
++                tcp_sent(_pcb, nullptr);
++                tcp_recv(_pcb, nullptr);
++                tcp_err(_pcb, nullptr);
++                tcp_poll(_pcb, nullptr, 0);
++                err = tcp_close(_pcb);
++                if (err != ERR_OK) {
++                    DEBUGV(":tc err %d", (int) err);
++                    tcp_abort(_pcb);
++                    err = ERR_ABRT;
++                }
++                _pcb = nullptr;
+             }
+-            _pcb = nullptr;
+-        }
+-        return err;
++            return err;
++        });
+     }
+ 
+     ~ClientContext() {
+@@ -110,77 +119,97 @@ public:
+     }
+ 
+     void ref() {
+-        ++_refcnt;
+-        DEBUGV(":ref %d", _refcnt);
++        lwip_run([&]() {
++            ++_refcnt;
++            DEBUGV(":ref %d", _refcnt);
++        });
+     }
+ 
+     void unref() {
+-        DEBUGV(":ur %d", _refcnt);
+-        if (--_refcnt == 0) {
+-            discard_received();
+-            close();
+-            if (_discard_cb) {
+-                _discard_cb(_discard_cb_arg, this);
+-            }
+-            DEBUGV(":del");
+-            delete this;
+-        }
++        // The discard callback edits the owning WiFiServer's list, which its accept callback also edits.
++        lwip_run([&]() {
++            DEBUGV(":ur %d", _refcnt);
++            if (--_refcnt == 0) {
++                discard_received();
++                close();
++                if (_discard_cb) {
++                    _discard_cb(_discard_cb_arg, this);
++                }
++                DEBUGV(":del");
++                delete this;
++            }
++        });
+     }
+ 
+     int connect(ip_addr_t* addr, uint16_t port) {
+         // note: not using `const ip_addr_t* addr` because
+         // - `ip6_addr_assign_zone()` below modifies `*addr`
+         // - caller's parameter `WiFiClient::connect` is a local copy
++        // _connect_pending is set together with tcp_connect() so a fast _connected() cannot be missed.
++        err_t err = lwip_run([&]() -> err_t {
+ #if LWIP_IPV6
+-        // Set zone so that link local addresses use the default interface
+-        if (IP_IS_V6(addr) && ip6_addr_lacks_zone(ip_2_ip6(addr), IP6_UNKNOWN)) {
+-            ip6_addr_assign_zone(ip_2_ip6(addr), IP6_UNKNOWN, netif_default);
+-        }
++            // Set zone so that link local addresses use the default interface
++            if (IP_IS_V6(addr) && ip6_addr_lacks_zone(ip_2_ip6(addr), IP6_UNKNOWN)) {
++                ip6_addr_assign_zone(ip_2_ip6(addr), IP6_UNKNOWN, netif_default);
++            }
+ #endif
+-        err_t err = tcp_connect(_pcb, addr, port, &ClientContext::_s_connected);
++            err_t e = tcp_connect(_pcb, addr, port, &ClientContext::_s_connected);
++            if (e == ERR_OK) {
++                _connect_pending = true;
++            }
++            return e;
++        });
+         if (err != ERR_OK) {
+             return 0;
+         }
+-        _connect_pending = true;
+         _op_start_time = millis();
+         // will resume on timeout or when _connected or _notify_error fires
+         // give scheduled functions a chance to run (e.g. Ethernet uses recurrent)
+         esp_delay(_timeout_ms, [this]() {
+             return this->_connect_pending;
+         }, 1);
+-        _connect_pending = false;
+-        if (!_pcb) {
+-            DEBUGV(":cabrt");
+-            return 0;
+-        }
+-        if (state() != ESTABLISHED) {
+-            DEBUGV(":ctmo");
+-            abort();
+-            return 0;
+-        }
+-        return 1;
++        // Decide and abort atomically: _error() may free the pcb at any time outside lwip_run().
++        return lwip_run([&]() -> int {
++            _connect_pending = false;
++            if (!_pcb) {
++                DEBUGV(":cabrt");
++                return 0;
++            }
++            if (state() != ESTABLISHED) {
++                DEBUGV(":ctmo");
++                abort();
++                return 0;
++            }
++            return 1;
++        });
+     }
+ 
+     size_t availableForWrite() const {
+-        return _pcb ? tcp_sndbuf(_pcb) : 0;
++        return lwip_run([&]() -> size_t {
++            return _pcb ? tcp_sndbuf(_pcb) : 0;
++        });
+     }
+ 
+     void setNoDelay(bool nodelay) {
+-        if (!_pcb) {
+-            return;
+-        }
+-        if (nodelay) {
+-            tcp_nagle_disable(_pcb);
+-        } else {
+-            tcp_nagle_enable(_pcb);
+-        }
++        lwip_run([&]() {
++            if (!_pcb) {
++                return;
++            }
++            if (nodelay) {
++                tcp_nagle_disable(_pcb);
++            } else {
++                tcp_nagle_enable(_pcb);
++            }
++        });
+     }
+ 
+     bool getNoDelay() const {
+-        if (!_pcb) {
+-            return false;
+-        }
+-        return tcp_nagle_disabled(_pcb);
++        return lwip_run([&]() -> bool {
++            if (!_pcb) {
++                return false;
++            }
++            return tcp_nagle_disabled(_pcb);
++        });
+     }
+ 
+     void setTimeout(int timeout_ms) {
+@@ -195,114 +224,136 @@ public:
+         return _timeout_ms;
+     }
+ 
++    // Note: the returned pointer points into the pcb; copy the address right away.
+     const ip_addr_t* getRemoteAddress() const {
+-        if (!_pcb) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> const ip_addr_t* {
++            if (!_pcb) {
++                return 0;
++            }
+ 
+-        return &_pcb->remote_ip;
++            return &_pcb->remote_ip;
++        });
+     }
+ 
+     uint16_t getRemotePort() const {
+-        if (!_pcb) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> uint16_t {
++            if (!_pcb) {
++                return 0;
++            }
+ 
+-        return _pcb->remote_port;
++            return _pcb->remote_port;
++        });
+     }
+ 
++    // Note: the returned pointer points into the pcb; copy the address right away.
+     const ip_addr_t* getLocalAddress() const {
+-        if (!_pcb) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> const ip_addr_t* {
++            if (!_pcb) {
++                return 0;
++            }
+ 
+-        return &_pcb->local_ip;
++            return &_pcb->local_ip;
++        });
+     }
+ 
+     uint16_t getLocalPort() const {
+-        if (!_pcb) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> uint16_t {
++            if (!_pcb) {
++                return 0;
++            }
+ 
+-        return _pcb->local_port;
++            return _pcb->local_port;
++        });
+     }
+ 
+     size_t getSize() const {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> size_t {
++            if (!_rx_buf) {
++                return 0;
++            }
+ 
+-        return _rx_buf->tot_len - _rx_buf_offset;
++            return _rx_buf->tot_len - _rx_buf_offset;
++        });
+     }
+ 
+     char read() {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> char {
++            if (!_rx_buf) {
++                return 0;
++            }
+ 
+-        char c = reinterpret_cast<char*>(_rx_buf->payload)[_rx_buf_offset];
+-        _consume(1);
+-        return c;
++            char c = reinterpret_cast<char*>(_rx_buf->payload)[_rx_buf_offset];
++            _consume(1);
++            return c;
++        });
+     }
+ 
+     size_t read(char* dst, size_t size) {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
+-
+-        size_t max_size = _rx_buf->tot_len - _rx_buf_offset;
+-        size = (size < max_size) ? size : max_size;
++        return lwip_run([&]() -> size_t {
++            if (!_rx_buf) {
++                return 0;
++            }
+ 
+-        DEBUGV(":rd %d, %d, %d", size, _rx_buf->tot_len, _rx_buf_offset);
+-        size_t size_read = 0;
+-        while (size) {
+-            size_t buf_size = _rx_buf->len - _rx_buf_offset;
+-            size_t copy_size = (size < buf_size) ? size : buf_size;
+-            DEBUGV(":rdi %d, %d", buf_size, copy_size);
+-            memcpy(dst, reinterpret_cast<char*>(_rx_buf->payload) + _rx_buf_offset, copy_size);
+-            dst += copy_size;
+-            _consume(copy_size);
+-            size -= copy_size;
+-            size_read += copy_size;
+-        }
+-        return size_read;
++            size_t max_size = _rx_buf->tot_len - _rx_buf_offset;
++            size = (size < max_size) ? size : max_size;
++
++            DEBUGV(":rd %d, %d, %d", size, _rx_buf->tot_len, _rx_buf_offset);
++            size_t size_read = 0;
++            while (size) {
++                size_t buf_size = _rx_buf->len - _rx_buf_offset;
++                size_t copy_size = (size < buf_size) ? size : buf_size;
++                DEBUGV(":rdi %d, %d", buf_size, copy_size);
++                memcpy(dst, reinterpret_cast<char*>(_rx_buf->payload) + _rx_buf_offset, copy_size);
++                dst += copy_size;
++                _consume(copy_size);
++                size -= copy_size;
++                size_read += copy_size;
++            }
++            return size_read;
++        });
+     }
+ 
+     char peek() const {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> char {
++            if (!_rx_buf) {
++                return 0;
++            }
+ 
+-        return reinterpret_cast<char*>(_rx_buf->payload)[_rx_buf_offset];
++            return reinterpret_cast<char*>(_rx_buf->payload)[_rx_buf_offset];
++        });
+     }
+ 
+     size_t peekBytes(char *dst, size_t size) const {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> size_t {
++            if (!_rx_buf) {
++                return 0;
++            }
+ 
+-        size_t max_size = _rx_buf->tot_len - _rx_buf_offset;
+-        size = (size < max_size) ? size : max_size;
++            size_t max_size = _rx_buf->tot_len - _rx_buf_offset;
++            size = (size < max_size) ? size : max_size;
+ 
+-        DEBUGV(":pd %d, %d, %d", size, _rx_buf->tot_len, _rx_buf_offset);
+-        size_t buf_size = _rx_buf->len - _rx_buf_offset;
+-        size_t copy_size = (size < buf_size) ? size : buf_size;
+-        DEBUGV(":rpi %d, %d", buf_size, copy_size);
+-        memcpy(dst, reinterpret_cast<char*>(_rx_buf->payload) + _rx_buf_offset, copy_size);
+-        return copy_size;
++            DEBUGV(":pd %d, %d, %d", size, _rx_buf->tot_len, _rx_buf_offset);
++            size_t buf_size = _rx_buf->len - _rx_buf_offset;
++            size_t copy_size = (size < buf_size) ? size : buf_size;
++            DEBUGV(":rpi %d, %d", buf_size, copy_size);
++            memcpy(dst, reinterpret_cast<char*>(_rx_buf->payload) + _rx_buf_offset, copy_size);
++            return copy_size;
++        });
+     }
+ 
+     void discard_received() {
+-        DEBUGV(":dsrcv %d", _rx_buf ? _rx_buf->tot_len : 0);
+-        if (!_rx_buf) {
+-            return;
+-        }
+-        if (_pcb) {
+-            tcp_recved(_pcb, (size_t) _rx_buf->tot_len);
+-        }
+-        pbuf_free(_rx_buf);
+-        _rx_buf = 0;
+-        _rx_buf_offset = 0;
++        lwip_run([&]() {
++            DEBUGV(":dsrcv %d", _rx_buf ? _rx_buf->tot_len : 0);
++            if (!_rx_buf) {
++                return;
++            }
++            if (_pcb) {
++                tcp_recved(_pcb, (size_t) _rx_buf->tot_len);
++            }
++            pbuf_free(_rx_buf);
++            _rx_buf = 0;
++            _rx_buf_offset = 0;
++        });
+     }
+ 
+     bool wait_until_acked(int max_wait_ms = WIFICLIENT_MAX_FLUSH_WAIT_MS) {
+@@ -310,7 +361,7 @@ public:
+         // option 1 done
+         // option 2 / _write_some() not necessary since _datasource is always nullptr here
+ 
+-        if (!_pcb) {
++        if (!lwip_run([&]() -> bool { return _pcb != nullptr; })) {
+             return true;
+         }
+ 
+@@ -328,13 +379,24 @@ public:
+                 return false;
+             }
+ 
+-            if (!_pcb) {
++            int sndbuf = 0;
++            bool done = false;
++            const bool alive = lwip_run([&]() -> bool {
++                if (!_pcb) {
++                    return false;
++                }
++                // force lwIP to send what can be sent
++                tcp_output(_pcb);
++                sndbuf = tcp_sndbuf(_pcb);
++                // peer has closed or all bytes are sent and acked
++                // ((TCP_SND_BUF-sndbuf) is the amount of un-acked bytes)
++                done = (state() != ESTABLISHED) || (sndbuf == TCP_SND_BUF);
++                return true;
++            });
++            if (!alive) {
+                 return false;
+             }
+-            // force lwIP to send what can be sent
+-            tcp_output(_pcb);
+ 
+-            int sndbuf = tcp_sndbuf(_pcb);
+             if (sndbuf != prevsndbuf) {
+                 // send buffer has changed (or first iteration)
+                 prevsndbuf = sndbuf;
+@@ -344,9 +406,7 @@ public:
+ 
+             // esp_yield(); // from sys or os context
+ 
+-            if ((state() != ESTABLISHED) || (sndbuf == TCP_SND_BUF)) {
+-                // peer has closed or all bytes are sent and acked
+-                // ((TCP_SND_BUF-sndbuf) is the amount of un-acked bytes)
++            if (done) {
+                 break;
+             }
+         }
+@@ -356,23 +416,25 @@ public:
+     }
+ 
+     uint8_t state() const {
+-        if (!_pcb || _pcb->state == CLOSE_WAIT || _pcb->state == CLOSING) {
+-            // CLOSED for WiFIClient::status() means nothing more can be written
+-            return CLOSED;
+-        }
++        return lwip_run([&]() -> uint8_t {
++            if (!_pcb || _pcb->state == CLOSE_WAIT || _pcb->state == CLOSING) {
++                // CLOSED for WiFIClient::status() means nothing more can be written
++                return CLOSED;
++            }
+ 
+-        return _pcb->state;
++            return _pcb->state;
++        });
+     }
+ 
+     size_t write(const char* ds, const size_t dl) {
+-        if (!_pcb) {
++        if (!lwip_run([&]() -> bool { return _pcb != nullptr; })) {
+             return 0;
+         }
+         return _write_from_source(ds, dl);
+     }
+ 
+     size_t write(Stream& stream) {
+-        if (!_pcb) {
++        if (!lwip_run([&]() -> bool { return _pcb != nullptr; })) {
+             return 0;
+         }
+         size_t sent = 0;
+@@ -399,30 +461,43 @@ public:
+     }
+ 
+     void keepAlive(uint16_t idle_sec = TCP_DEFAULT_KEEPALIVE_IDLE_SEC, uint16_t intv_sec = TCP_DEFAULT_KEEPALIVE_INTERVAL_SEC, uint8_t count = TCP_DEFAULT_KEEPALIVE_COUNT) {
+-        if (idle_sec && intv_sec && count) {
+-            _pcb->so_options |= SOF_KEEPALIVE;
+-            _pcb->keep_idle = (uint32_t)1000 * idle_sec;
+-            _pcb->keep_intvl = (uint32_t)1000 * intv_sec;
+-            _pcb->keep_cnt = count;
+-        } else {
+-            _pcb->so_options &= ~SOF_KEEPALIVE;
+-        }
++        lwip_run([&]() {
++            if (!_pcb) {
++                return;
++            }
++            if (idle_sec && intv_sec && count) {
++                _pcb->so_options |= SOF_KEEPALIVE;
++                _pcb->keep_idle = (uint32_t)1000 * idle_sec;
++                _pcb->keep_intvl = (uint32_t)1000 * intv_sec;
++                _pcb->keep_cnt = count;
++            } else {
++                _pcb->so_options &= ~SOF_KEEPALIVE;
++            }
++        });
+     }
+ 
+     bool isKeepAliveEnabled() const {
+-        return !!(_pcb->so_options & SOF_KEEPALIVE);
++        return lwip_run([&]() -> bool {
++            return _pcb && !!(_pcb->so_options & SOF_KEEPALIVE);
++        });
+     }
+ 
+     uint16_t getKeepAliveIdle() const {
+-        return isKeepAliveEnabled() ? (_pcb->keep_idle + 500) / 1000 : 0;
++        return lwip_run([&]() -> uint16_t {
++            return isKeepAliveEnabled() ? (_pcb->keep_idle + 500) / 1000 : 0;
++        });
+     }
+ 
+     uint16_t getKeepAliveInterval() const {
+-        return isKeepAliveEnabled() ? (_pcb->keep_intvl + 500) / 1000 : 0;
++        return lwip_run([&]() -> uint16_t {
++            return isKeepAliveEnabled() ? (_pcb->keep_intvl + 500) / 1000 : 0;
++        });
+     }
+ 
+     uint8_t getKeepAliveCount() const {
+-        return isKeepAliveEnabled() ? _pcb->keep_cnt : 0;
++        return lwip_run([&]() -> uint8_t {
++            return isKeepAliveEnabled() ? _pcb->keep_cnt : 0;
++        });
+     }
+ 
+     bool getSync() const {
+@@ -436,23 +511,31 @@ public:
+     // return a pointer to available data buffer (size = peekAvailable())
+     // semantic forbids any kind of read() before calling peekConsume()
+     const char* peekBuffer() {
+-        if (!_rx_buf) {
+-            return nullptr;
+-        }
+-        return (const char*)_rx_buf->payload + _rx_buf_offset;
++        return lwip_run([&]() -> const char* {
++            if (!_rx_buf) {
++                return nullptr;
++            }
++            return (const char*)_rx_buf->payload + _rx_buf_offset;
++        });
+     }
+ 
+     // return number of byte accessible by peekBuffer()
+     size_t peekAvailable() {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
+-        return _rx_buf->len - _rx_buf_offset;
++        return lwip_run([&]() -> size_t {
++            if (!_rx_buf) {
++                return 0;
++            }
++            return _rx_buf->len - _rx_buf_offset;
++        });
+     }
+ 
+     // consume bytes after use (see peekBuffer)
+     void peekConsume(size_t consume) {
+-        _consume(consume);
++        lwip_run([&]() {
++            if (_rx_buf) {
++                _consume(consume);
++            }
++        });
+     }
+ 
+ protected:
+@@ -478,20 +561,29 @@ protected:
+         _written = 0;
+         _op_start_time = millis();
+         do {
+-            if (_write_some()) {
+-                _op_start_time = millis();
+-            }
++            // Write, check for completion and arm _send_waiting atomically, so an ack that
++            // arrives right after tcp_write() cannot clear _send_waiting before it is set.
++            const bool finished = lwip_run([&]() -> bool {
++                if (_write_some()) {
++                    _op_start_time = millis();
++                }
+ 
+-            if (_written == _datalen || _is_timeout() || state() == CLOSED) {
+-                if (_is_timeout()) {
+-                    DEBUGV(":wtmo");
++                if (_written == _datalen || _is_timeout() || state() == CLOSED) {
++                    if (_is_timeout()) {
++                        DEBUGV(":wtmo");
++                    }
++                    _datasource = nullptr;
++                    _datalen = 0;
++                    return true;
+                 }
+-                _datasource = nullptr;
+-                _datalen = 0;
++
++                _send_waiting = true;
++                return false;
++            });
++            if (finished) {
+                 break;
+             }
+ 
+-            _send_waiting = true;
+             // will resume on timeout or when _write_some_from_cb or _notify_error fires
+             // give scheduled functions a chance to run (e.g. Ethernet uses recurrent)
+             esp_delay(_timeout_ms, [this]() {
+@@ -740,8 +832,9 @@ private:
+     size_t _written = 0;
+     uint32_t _timeout_ms = 5000;
+     uint32_t _op_start_time = 0;
+-    bool _send_waiting = false;
+-    bool _connect_pending = false;
++    // Cleared by lwIP callbacks (LWIP task, possibly the other core) while esp_delay() polls them.
++    volatile bool _send_waiting = false;
++    volatile bool _connect_pending = false;
+ 
+     int8_t _refcnt;
+     ClientContext* _next;
+diff --git a/libraries/WiFi/src/include/UdpContext.h b/libraries/WiFi/src/include/UdpContext.h
+index c5a8119..7adc12b 100644
+--- a/libraries/WiFi/src/include/UdpContext.h
++++ b/libraries/WiFi/src/include/UdpContext.h
+@@ -30,6 +30,11 @@ extern "C" {
+ #include <AddrList.h>
+ #include <Arduino.h>
+ #include "lwip/timeouts.h"
++#include "lwip_run.h"
++
++// Receive-side state (_rx_buf chain, offsets) is also modified by _recv() in the LWIP task, and
++// pcb fields are lwIP's: methods touching either run their body through lwip_run(). The transmit
++// buffer (_tx_buf_*) is only used by the application and needs no protection.
+ 
+ //#include <PolledTimeout.h>
+ 
+@@ -64,49 +69,59 @@ public:
+     }
+ 
+     ~UdpContext() {
+-        udp_remove(_pcb);
+-        _pcb = 0;
+-        if (_tx_buf_head) {
+-            pbuf_free(_tx_buf_head);
+-            _tx_buf_head = 0;
+-            _tx_buf_cur = 0;
+-            _tx_buf_offset = 0;
+-        }
+-        if (_rx_buf) {
+-            pbuf_free(_rx_buf);
+-            _rx_buf = 0;
+-            _rx_buf_offset = 0;
+-            _rx_buf_size = 0;
+-        }
++        lwip_run([&]() {
++            udp_remove(_pcb);
++            _pcb = 0;
++            if (_tx_buf_head) {
++                pbuf_free(_tx_buf_head);
++                _tx_buf_head = 0;
++                _tx_buf_cur = 0;
++                _tx_buf_offset = 0;
++            }
++            if (_rx_buf) {
++                pbuf_free(_rx_buf);
++                _rx_buf = 0;
++                _rx_buf_offset = 0;
++                _rx_buf_size = 0;
++            }
++        });
+     }
+ 
+     void ref() {
+-        ++_refcnt;
++        lwip_run([&]() {
++            ++_refcnt;
++        });
+     }
+ 
+     void unref() {
+-        DEBUGV(":ur %d", _refcnt);
+-        if (--_refcnt == 0) {
+-            delete this;
+-        }
++        lwip_run([&]() {
++            DEBUGV(":ur %d", _refcnt);
++            if (--_refcnt == 0) {
++                delete this;
++            }
++        });
+     }
+ 
+     bool connect(const IPAddress& addr, uint16_t port) {
+-        _pcb->remote_ip = addr;
+-        _pcb->remote_port = port;
+-#if LWIP_IPV6
+-        // Set zone so that link local addresses use the default interface
+-        if (IP_IS_V6(&_pcb->remote_ip) && ip6_addr_lacks_zone(ip_2_ip6(&_pcb->remote_ip), IP6_UNKNOWN)) {
+-            ip6_addr_assign_zone(ip_2_ip6(&_pcb->remote_ip), IP6_UNKNOWN, netif_default);
+-        }
+-#endif
+-        return true;
++        return lwip_run([&]() -> bool {
++            _pcb->remote_ip = addr;
++            _pcb->remote_port = port;
++    #if LWIP_IPV6
++            // Set zone so that link local addresses use the default interface
++            if (IP_IS_V6(&_pcb->remote_ip) && ip6_addr_lacks_zone(ip_2_ip6(&_pcb->remote_ip), IP6_UNKNOWN)) {
++                ip6_addr_assign_zone(ip_2_ip6(&_pcb->remote_ip), IP6_UNKNOWN, netif_default);
++            }
++    #endif
++            return true;
++        });
+     }
+ 
+     bool listen(const IPAddress& addr, uint16_t port) {
+-        udp_recv(_pcb, &_s_recv, (void *) this);
+-        err_t err = udp_bind(_pcb, addr, port);
+-        return err == ERR_OK;
++        return lwip_run([&]() -> bool {
++            udp_recv(_pcb, &_s_recv, (void *) this);
++            err_t err = udp_bind(_pcb, addr, port);
++            return err == ERR_OK;
++        });
+     }
+ 
+     void disconnect() {
+@@ -132,13 +147,17 @@ public:
+                 }
+             assert(addr.isV4());
+         }
+-        udp_set_multicast_netif_addr(_pcb, ip_2_ip4((const ip_addr_t*)addr));
++        lwip_run([&]() {
++            udp_set_multicast_netif_addr(_pcb, ip_2_ip4((const ip_addr_t*)addr));
++        });
+     }
+ 
+ #else // !LWIP_IPV6
+ 
+     void setMulticastInterface(const IPAddress& addr) {
+-        udp_set_multicast_netif_addr(_pcb, ip_2_ip4((const ip_addr_t*)addr));
++        lwip_run([&]() {
++            udp_set_multicast_netif_addr(_pcb, ip_2_ip4((const ip_addr_t*)addr));
++        });
+     }
+ 
+ #endif // !LWIP_IPV6
+@@ -147,7 +166,9 @@ public:
+         Add a netif (by its index) as the multicast interface
+     */
+     void setMulticastInterface(netif* p_pNetIf) {
+-        udp_set_multicast_netif_index(_pcb, (p_pNetIf ? netif_get_index(p_pNetIf) : NETIF_NO_INDEX));
++        lwip_run([&]() {
++            udp_set_multicast_netif_index(_pcb, (p_pNetIf ? netif_get_index(p_pNetIf) : NETIF_NO_INDEX));
++        });
+     }
+ 
+     /*
+@@ -161,7 +182,9 @@ public:
+ #ifdef LWIP_MAYBE_XCC
+         _mcast_ttl = ttl;
+ #else
+-        udp_set_multicast_ttl(_pcb, ttl);
++        lwip_run([&]() {
++            udp_set_multicast_ttl(_pcb, ttl);
++        });
+ #endif
+     }
+ 
+@@ -193,24 +216,32 @@ public:
+ #endif
+ 
+     size_t getSize() const {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> size_t {
++            if (!_rx_buf) {
++                return 0;
++            }
+ 
+-        return _rx_buf_size - _rx_buf_offset;
++            return _rx_buf_size - _rx_buf_offset;
++        });
+     }
+ 
+     size_t tell() const {
+-        return _rx_buf_offset;
++        return lwip_run([&]() -> size_t {
++            return _rx_buf_offset;
++        });
+     }
+ 
+     void seek(const size_t pos) {
+-        assert(isValidOffset(pos));
+-        _rx_buf_offset = pos;
++        lwip_run([&]() {
++            assert(isValidOffset(pos));
++            _rx_buf_offset = pos;
++        });
+     }
+ 
+     bool isValidOffset(const size_t pos) const {
+-        return (pos <= _rx_buf_size);
++        return lwip_run([&]() -> bool {
++            return (pos <= _rx_buf_size);
++        });
+     }
+ 
+     netif* getInputNetif() const {
+@@ -230,114 +261,126 @@ public:
+     }
+ 
+     uint16_t getLocalPort() const {
+-        if (!_pcb) {
+-            return 0;
+-        }
+-        return _pcb->local_port;
++        return lwip_run([&]() -> uint16_t {
++            if (!_pcb) {
++                return 0;
++            }
++            return _pcb->local_port;
++        });
+     }
+ 
+     bool next() {
+-        if (!_rx_buf) {
+-            return false;
+-        }
+-        if (!_first_buf_taken) {
+-            _first_buf_taken = true;
+-            return true;
+-        }
++        return lwip_run([&]() -> bool {
++            if (!_rx_buf) {
++                return false;
++            }
++            if (!_first_buf_taken) {
++                _first_buf_taken = true;
++                return true;
++            }
+ 
+-        // We have interleaved information on addresses within received pbuf chain:
+-        // (before ipv6 code we had: (data-pbuf) -> (data-pbuf) -> (data-pbuf) -> ... in the receiving order)
+-        // Now:         (address-info-pbuf -> chained-data-pbuf [-> chained-data-pbuf...]) ->
+-        //      (chained-address-info-pbuf -> chained-data-pbuf [-> chained...]) -> ...
+-        // _rx_buf is currently addressing a data pbuf,
+-        // in this function it is going to be discarded.
++            // We have interleaved information on addresses within received pbuf chain:
++            // (before ipv6 code we had: (data-pbuf) -> (data-pbuf) -> (data-pbuf) -> ... in the receiving order)
++            // Now:         (address-info-pbuf -> chained-data-pbuf [-> chained-data-pbuf...]) ->
++            //      (chained-address-info-pbuf -> chained-data-pbuf [-> chained...]) -> ...
++            // _rx_buf is currently addressing a data pbuf,
++            // in this function it is going to be discarded.
+ 
+-        auto deleteme = _rx_buf;
++            auto deleteme = _rx_buf;
+ 
+-        // forward in the chain until next address-info pbuf or end of chain
+-        while (_rx_buf && _rx_buf->flags != PBUF_HELPER_FLAG) {
+-            _rx_buf = _rx_buf->next;
+-        }
++            // forward in the chain until next address-info pbuf or end of chain
++            while (_rx_buf && _rx_buf->flags != PBUF_HELPER_FLAG) {
++                _rx_buf = _rx_buf->next;
++            }
+ 
+-        if (_rx_buf) {
+-            assert(_rx_buf->flags == PBUF_HELPER_FLAG);
++            if (_rx_buf) {
++                assert(_rx_buf->flags == PBUF_HELPER_FLAG);
+ 
+-            // copy address helper to "current address"
+-            auto helper = (AddrHelper*)PBUF_ALIGNER(_rx_buf->payload);
+-            _currentAddr = *helper;
++                // copy address helper to "current address"
++                auto helper = (AddrHelper*)PBUF_ALIGNER(_rx_buf->payload);
++                _currentAddr = *helper;
+ 
+-            // destroy the helper in the about-to-be-released pbuf
+-            helper->~AddrHelper();
++                // destroy the helper in the about-to-be-released pbuf
++                helper->~AddrHelper();
+ 
+-            // forward in rx_buf list, next one is effective data
+-            // current (not ref'ed) one will be pbuf_free'd
+-            // with the 'deleteme' pointer above
+-            _rx_buf = _rx_buf->next;
++                // forward in rx_buf list, next one is effective data
++                // current (not ref'ed) one will be pbuf_free'd
++                // with the 'deleteme' pointer above
++                _rx_buf = _rx_buf->next;
+ 
+-            // this rx_buf is not nullptr by construction,
+-            assert(_rx_buf);
+-            // ref'ing it to prevent release from the below pbuf_free(deleteme)
+-            // (ref counter prevents release and will be decreased by pbuf_free)
+-            pbuf_ref(_rx_buf);
+-        }
++                // this rx_buf is not nullptr by construction,
++                assert(_rx_buf);
++                // ref'ing it to prevent release from the below pbuf_free(deleteme)
++                // (ref counter prevents release and will be decreased by pbuf_free)
++                pbuf_ref(_rx_buf);
++            }
+ 
+-        // release in chain previous data, and if any:
+-        // current helper, but not start of current data
+-        pbuf_free(deleteme);
++            // release in chain previous data, and if any:
++            // current helper, but not start of current data
++            pbuf_free(deleteme);
+ 
+-        _rx_buf_offset = 0;
+-        _rx_buf_size = _processSize(_rx_buf);
+-        return _rx_buf != nullptr;
++            _rx_buf_offset = 0;
++            _rx_buf_size = _processSize(_rx_buf);
++            return _rx_buf != nullptr;
++        });
+     }
+ 
+     int read() {
+-        if (!_rx_buf || _rx_buf_offset >= _rx_buf_size) {
+-            return -1;
+-        }
++        return lwip_run([&]() -> int {
++            if (!_rx_buf || _rx_buf_offset >= _rx_buf_size) {
++                return -1;
++            }
+ 
+-        char c = pbuf_get_at(_rx_buf, _rx_buf_offset);
+-        _consume(1);
+-        return c;
++            char c = pbuf_get_at(_rx_buf, _rx_buf_offset);
++            _consume(1);
++            return c;
++        });
+     }
+ 
+     size_t read(char* dst, size_t size) {
+-        if (!_rx_buf) {
+-            return 0;
+-        }
++        return lwip_run([&]() -> size_t {
++            if (!_rx_buf) {
++                return 0;
++            }
+ 
+-        size_t max_size = _rx_buf_size - _rx_buf_offset;
+-        size = (size < max_size) ? size : max_size;
+-        DEBUGV(":urd %d, %d, %d", size, _rx_buf_size, _rx_buf_offset);
++            size_t max_size = _rx_buf_size - _rx_buf_offset;
++            size = (size < max_size) ? size : max_size;
++            DEBUGV(":urd %d, %d, %d", size, _rx_buf_size, _rx_buf_offset);
+ 
+-        void* buf = pbuf_get_contiguous(_rx_buf, dst, size, size, _rx_buf_offset);
+-        if (!buf) {
+-            return 0;
+-        }
++            void* buf = pbuf_get_contiguous(_rx_buf, dst, size, size, _rx_buf_offset);
++            if (!buf) {
++                return 0;
++            }
+ 
+-        if (buf != dst) {
+-            memcpy(dst, buf, size);
+-        }
++            if (buf != dst) {
++                memcpy(dst, buf, size);
++            }
+ 
+-        _consume(size);
++            _consume(size);
+ 
+-        return size;
++            return size;
++        });
+     }
+ 
+     int peek() const {
+-        if (!_rx_buf || _rx_buf_offset == _rx_buf_size) {
+-            return -1;
+-        }
++        return lwip_run([&]() -> int {
++            if (!_rx_buf || _rx_buf_offset == _rx_buf_size) {
++                return -1;
++            }
+ 
+-        return pbuf_get_at(_rx_buf, _rx_buf_offset);
++            return pbuf_get_at(_rx_buf, _rx_buf_offset);
++        });
+     }
+ 
+     void flush() {
+-        //XXX this does not follow Arduino's flush definition
+-        if (!_rx_buf) {
+-            return;
+-        }
++        lwip_run([&]() {
++            //XXX this does not follow Arduino's flush definition
++            if (!_rx_buf) {
++                return;
++            }
+ 
+-        _consume(_rx_buf_size - _rx_buf_offset);
++            _consume(_rx_buf_size - _rx_buf_offset);
++        });
+     }
+ 
+     size_t append(const char* data, size_t size) {
+diff --git a/libraries/WiFi/src/include/lwip_run.h b/libraries/WiFi/src/include/lwip_run.h
+new file mode 100644
+index 0000000..4e988f3
+--- /dev/null
++++ b/libraries/WiFi/src/include/lwip_run.h
+@@ -0,0 +1,64 @@
++/*
++    lwip_run.h - Run a block of code atomically with respect to lwIP callbacks
++
++    Copyright (c) 2026 arduino-pico contributors
++
++    This library is free software; you can redistribute it and/or
++    modify it under the terms of the GNU Lesser General Public
++    License as published by the Free Software Foundation; either
++    version 2.1 of the License, or (at your option) any later version.
++
++    This library is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++    Lesser General Public License for more details.
++
++    You should have received a copy of the GNU Lesser General Public
++    License along with this library; if not, write to the Free Software
++    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++*/
++
++#pragma once
++
++#include <type_traits>
++#include <lwip_wrap.h>
++
++#ifdef __FREERTOS
++extern "C" bool __isLWIPThread();
++#endif
++
++// ClientContext, UdpContext and WiFiServer keep state (pcb pointers, receive pbuf chains,
++// accept queues) that their lwIP callbacks also modify. Under FreeRTOS those callbacks run in
++// the LWIP task, possibly on the other core, while the application task uses the same objects,
++// so each wrapped lwIP call being atomic is not enough: a check-then-act on that state can
++// interleave with a callback (e.g. abort() on a pcb that _error() just freed).
++//
++// lwip_run(f) executes f() inside the LWIP task (synchronously, returning its result), so it
++// cannot interleave with any lwIP callback. f() must not block or wait for lwIP progress.
++// Without FreeRTOS, or when already in the LWIP task, f() is simply called.
++template <typename F>
++inline auto lwip_run(F&& f) -> decltype(f()) {
++    using R = decltype(f());
++    using Fn = typename std::remove_reference<F>::type;
++#ifdef __FREERTOS
++    if (!__isLWIPThread()) {
++        if constexpr (std::is_void<R>::value) {
++            lwip_callback([](void* p) {
++                (*static_cast<Fn*>(p))();
++            }, static_cast<void*>(&f));
++            return;
++        } else {
++            struct Call {
++                Fn* fn;
++                R ret;
++            } call{&f, R{}};
++            lwip_callback([](void* p) {
++                Call* c = static_cast<Call*>(p);
++                c->ret = (*c->fn)();
++            }, static_cast<void*>(&call));
++            return call.ret;
++        }
++    }
++#endif
++    return f();
++}
