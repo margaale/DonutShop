@@ -595,6 +595,11 @@ static void bringupSamplerTask(void*){
   TaskHandle_t lwip = xTaskGetHandle("LWIP");
   eTaskState lastWifi = eInvalid;
   uint32_t lastChange = millis(), transitions = 0;
+  // Which tasks are running when sampled (the sampler itself excluded)
+  static const int MAXN = 16;
+  const char* runName[MAXN] = {nullptr};
+  uint32_t runCount[MAXN] = {0};
+  TaskStatus_t status[24];
   while(bringupSampling){
     const eTaskState w = eTaskGetState(bringupTask);
     const eTaskState l = lwip ? eTaskGetState(lwip) : eInvalid;
@@ -606,11 +611,24 @@ static void bringupSamplerTask(void*){
       lastWifi = w;
       lastChange = millis();
     }
+    const UBaseType_t n = uxTaskGetSystemState(status, 24, nullptr);
+    for(UBaseType_t i = 0; i < n; i++){
+      if(status[i].eCurrentState != eRunning || status[i].xHandle == xTaskGetCurrentTaskHandle()) continue;
+      int k = 0;
+      while(k < MAXN && runName[k] && strcmp(runName[k], status[i].pcTaskName)) k++;
+      if(k < MAXN){
+        runName[k] = status[i].pcTaskName; // task names live as long as the task
+        runCount[k]++;
+      }
+    }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
   DS_LOG("bring-up samples (20 ms): task run %lu ready %lu blocked %lu suspended %lu | LWIP run %lu ready %lu blocked %lu | %lu transitions",
     (unsigned long)wifiCount[0], (unsigned long)wifiCount[1], (unsigned long)wifiCount[2], (unsigned long)wifiCount[3],
     (unsigned long)lwipCount[0], (unsigned long)lwipCount[1], (unsigned long)lwipCount[2], (unsigned long)transitions);
+  for(int k = 0; k < MAXN && runName[k]; k++){
+    DS_LOG("  running when sampled: %-12s %lu", runName[k], (unsigned long)runCount[k]);
+  }
   vTaskDelete(nullptr);
 }
 #endif
