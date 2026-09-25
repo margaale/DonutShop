@@ -175,7 +175,7 @@ The Pico 2 W build does what the Nano ESP32 build does: gameID, WebCtl, OTA, Ext
 - **Updates:** "Check for Updates" in Settings works the same way. It installs the `DonutShop_vX.X.X_pico2w_update.bin` asset from the same GitHub release, which `.github/workflows/release-pico2w.yml` builds and attaches to every published release. If you update manually, use the `_pico2w_update.bin` file. The Pico refuses Nano ESP32 images.
 - **Wi-Fi setup:** join the `DonutShop_Setup` access point and type your network name (SSID) and password. The Pico does not list nearby networks. If it cannot connect to the saved network within 20 seconds, it reboots into the setup AP. With a saved network and no one using the AP, it reboots after 5 minutes and tries the saved network again.
 - **Status LED:** the Pico 2 W has no RGB LED. The on-board LED blinks fast while joining Wi-Fi and once per second while the setup AP is active. The orange / blue / green colors from the table above need the optional external RGB LED.
-- The Pico's USB port acts as the host for the RT4K, so it has no USB serial monitor.
+- The Pico's USB port acts as the host for the RT4K, so it has no USB serial monitor. To troubleshoot, flash the `pico2w_debug` build instead: its USB port is a serial console (115200 baud) with boot logs, and RT4K USB is disabled.
 
 <br />
 

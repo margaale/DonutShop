@@ -53,8 +53,12 @@
 #if !defined(__FREERTOS)
 #error "DonutShop on the Pico 2 W needs the FreeRTOS OS option (FQBN os=freertos), see sketch.yaml"
 #endif
-#if !defined(USE_TINYUSB_HOST)
-#error "DonutShop on the Pico 2 W needs the native TinyUSB host stack (FQBN usbstack=tinyusb_host), see sketch.yaml"
+// Normal build: the native USB port is a TinyUSB host for the RT4K (usbstack=tinyusb_host).
+// Debug build (profile pico2w_debug): the USB port is a serial console with boot logs and RT4K USB is off.
+#if defined(USE_TINYUSB_HOST)
+#define DS_RT4K_USB 1
+#else
+#define DS_RT4K_USB 0
 #endif
 
 #include <FreeRTOS.h>
@@ -97,7 +101,7 @@
 #define FILE_WRITE "w"
 #endif
 
-// Write-only link to the RT4K USB-C port (the RT4K is a CDC-ACM/FTDI device, the Pico is the USB host).
+// Write-only link to the RT4K USB-C port (a no-op sink in the debug build) (the RT4K is a CDC-ACM/FTDI device, the Pico is the USB host).
 // Any task may print to it. Bytes are queued in a FreeRTOS stream buffer and only the loop() task
 // (platform::loopHook) touches TinyUSB. Bytes are dropped while no RT4K is mounted.
 class Rt4kUsbSerial : public Print {

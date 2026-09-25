@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: [nano_esp32, pico2w]
+        profile: [nano_esp32, pico2w, pico2w_debug]
 
     steps:
       - name: Check out

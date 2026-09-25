@@ -23,15 +23,28 @@
 #include <LittleFS.h>
 #include <DNSServer.h>
 #include <ArduinoJson.h>
+#if DS_RT4K_USB
 #include <Adafruit_TinyUSB.h>
+#endif
 #include <semphr.h>
 #include <stream_buffer.h>
+
+// Boot logs on the USB serial console, debug build only. (This file does not see the sketch's
+// "#define Serial Serial2", so Serial here is the USB CDC port.)
+#if DS_RT4K_USB
+#define DS_LOG(...) do{}while(0)
+#else
+#define DS_LOG(fmt, ...) Serial.printf("[ds %lu] " fmt "\r\n", (unsigned long)millis(), ##__VA_ARGS__)
+#endif
+#define DS_LOG_STACK(where) DS_LOG("%s: stack free %lu bytes", where, (unsigned long)uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t))
 
 Rt4kUsbSerial CdcSerial;
 SerialPIO SerialPIO2(DS_EXTRON2_TX_PIN, DS_EXTRON2_RX_PIN);
 
 ////////////////////////////////////////////////////////////////////////////////////
 // RT4K USB (Pico = USB host, RT4K = CDC-ACM / FTDI device)
+
+#if DS_RT4K_USB
 
 static Adafruit_USBH_Host usbHost;
 static Adafruit_USBH_CDC usbCdc;
@@ -95,6 +108,16 @@ extern "C" void tuh_cdc_mount_cb(uint8_t idx){
 extern "C" void tuh_cdc_umount_cb(uint8_t idx){
   usbCdc.umount(idx);
 }
+
+#else // debug build: no USB host, RT4K output is dropped
+
+static const bool usbStarted = false;
+void Rt4kUsbSerial::begin(unsigned long baud){ (void)baud; }
+size_t Rt4kUsbSerial::write(uint8_t c){ (void)c; return 1; }
+size_t Rt4kUsbSerial::write(const uint8_t *buffer, size_t size){ (void)buffer; return size; }
+static void usbService(){}
+
+#endif // DS_RT4K_USB
 
 ////////////////////////////////////////////////////////////////////////////////////
 // Core services
@@ -203,6 +226,7 @@ static void blinkLed(uint32_t periodMs){
 }
 
 static bool connectSta(const char* hostname, const String& ssid, const String& pass){
+  DS_LOG("joining %s", ssid.c_str());
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(hostname);
   if(pass.length()) WiFi.begin(ssid.c_str(), pass.c_str());
@@ -221,11 +245,14 @@ static bool connectSta(const char* hostname, const String& ssid, const String& p
 [[noreturn]] static void runPortal(const char* portalName, bool haveCreds){
   // Same sequence as arduino-pico's DNSServer/CaptivePortal example.
   const IPAddress ip(192, 168, 4, 1);
+  DS_LOG("starting AP %s", portalName);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
-  WiFi.softAP(portalName);
+  bool apOk = WiFi.softAP(portalName);
+  DS_LOG("softAP %s, IP %s", apOk ? "ok" : "FAILED", WiFi.softAPIP().toString().c_str());
+  DS_LOG_STACK("after softAP");
 
-  // Heap allocated: setup() runs on the 4 KB loop() task stack.
+  // Heap allocated: they live for the rest of this boot (the portal ends with a reboot).
   DNSServer* dns = new DNSServer();
   dns->start(53, "*", ip);
   WebServer* portal = new WebServer(80);
@@ -270,8 +297,15 @@ static bool connectSta(const char* hostname, const String& ssid, const String& p
     portal->send(302, "text/plain", "");
   });
   portal->begin();
+  DS_LOG("portal web server + DNS running");
+  DS_LOG_STACK("portal ready");
 
+  uint32_t lastBeat = millis();
   for(;;){
+    if(millis() - lastBeat > 10000){
+      lastBeat = millis();
+      DS_LOG("portal alive, %d client(s)", WiFi.softAPgetStationNum());
+    }
     dns->processNextRequest();
     portal->handleClient();
     blinkLed(1000); // slow blink: setup portal active
@@ -285,19 +319,64 @@ static bool connectSta(const char* hostname, const String& ssid, const String& p
   }
 }
 
-void platform::wifiBegin(const char* hostname, const char* portalName){
-  fsBegin(); // credentials live in LittleFS; setup() mounts it later again, which is a no-op
+static void wifiBeginImpl(const char* hostname, const char* portalName){
+  DS_LOG_STACK("wifi task start");
+  bool fsOk = platform::fsBegin(); // credentials live in LittleFS; setup() mounts it later again, which is a no-op
+  DS_LOG("LittleFS %s", fsOk ? "mounted" : "FAILED");
   String ssid, pass;
   const bool haveCreds = loadCreds(ssid, pass);
+  DS_LOG("saved network: %s", haveCreds ? ssid.c_str() : "(none)");
   if(LittleFS.exists(PORTAL_FLAG_FILE)){
+    DS_LOG("portal flag set, starting portal");
     LittleFS.remove(PORTAL_FLAG_FILE);
     runPortal(portalName, haveCreds);
   }
   if(!haveCreds) runPortal(portalName, false); // first boot: radio untouched so far
-  if(connectSta(hostname, ssid, pass)) return;
+  if(connectSta(hostname, ssid, pass)){
+    DS_LOG("connected, IP %s", WiFi.localIP().toString().c_str());
+    return;
+  }
+  DS_LOG("join failed, rebooting into the portal");
   File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
   f.close();
   rp2040.reboot();
+}
+
+// setup() runs on arduino-pico's 4 KB loop() task stack, too small for Wi-Fi + LittleFS + the portal
+// web server. Run them on a task of our own and block setup() until Wi-Fi is up.
+static const configSTACK_DEPTH_TYPE WIFI_TASK_STACK = 4096; // words = 16 KB
+
+struct WifiTaskArgs {
+  const char* hostname;
+  const char* portalName;
+  TaskHandle_t waiter;
+};
+
+static void wifiTask(void* param){
+  WifiTaskArgs* args = static_cast<WifiTaskArgs*>(param);
+  wifiBeginImpl(args->hostname, args->portalName);
+  DS_LOG_STACK("wifi task end");
+  xTaskNotifyGive(args->waiter);
+  vTaskDelete(nullptr);
+}
+
+void platform::wifiBegin(const char* hostname, const char* portalName){
+#if !DS_RT4K_USB
+  Serial.begin(115200);
+  uint32_t t0 = millis();
+  while(!Serial && millis() - t0 < 8000) delay(10); // give the serial monitor time to attach
+  DS_LOG("DonutShop Pico 2 W debug build");
+  DS_LOG_STACK("setup");
+#endif
+  WifiTaskArgs args{hostname, portalName, xTaskGetCurrentTaskHandle()};
+  TaskHandle_t task = nullptr;
+  if(xTaskCreate(wifiTask, "DSWIFI", WIFI_TASK_STACK, &args, uxTaskPriorityGet(nullptr), &task) != pdPASS){
+    DS_LOG("could not create the Wi-Fi task, running inline");
+    wifiBeginImpl(hostname, portalName);
+    return;
+  }
+  vTaskCoreAffinitySet(task, 1 << 0); // same core as the loop() task it replaces
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 
 #endif // ARDUINO_ARCH_RP2040

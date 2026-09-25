@@ -29,4 +29,16 @@ profiles:
       - IRremote (4.7.1)
       - ArduinoJson (7.4.3)
 
+  pico2w_debug:
+    notes: >
+      Pico 2 W diagnostic build: the USB port is a serial console (115200) with boot logs and
+      core debug output instead of the RT4K USB host. Everything else matches pico2w.
+    fqbn: rp2040:rp2040:rpipico2w:flash=4194304_2097152,os=freertos,usbstack=picosdk,dbgport=Serial,dbglvl=Core
+    platforms:
+      - platform: rp2040:rp2040 (6.1.1)
+        platform_index_url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+    libraries:
+      - IRremote (4.7.1)
+      - ArduinoJson (7.4.3)
+
 default_profile: nano_esp32
