@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   sync:
+    # Nano ESP32 installer mirror of the upstream releases; forks publish no *_full.bin assets.
+    if: github.repository == 'svirant/DonutShop'
     runs-on: ubuntu-latest
 
     steps:
