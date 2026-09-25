@@ -337,8 +337,7 @@ static void debugSerialCommands(){
   static uint8_t len = 0;
   while(Serial.available()){
     const char c = Serial.read();
-    if(c != '' && c != '
-'){
+    if(c != '\r' && c != '\n'){
       if(len < sizeof(line) - 1) line[len++] = c;
       continue;
     }
