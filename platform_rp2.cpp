@@ -28,6 +28,7 @@
 #endif
 #include <semphr.h>
 #include <stream_buffer.h>
+#include <lwip_wrap.h> // lwip_callback()
 
 // Boot logs on the USB serial console, debug build only. (This file does not see the sketch's
 // "#define Serial Serial2", so Serial here is the USB CDC port.)
@@ -242,14 +243,30 @@ static bool connectSta(const char* hostname, const String& ssid, const String& p
   return true;
 }
 
+struct SoftApArgs {
+  const char* name;
+  IPAddress ip;
+  bool ok;
+};
+
+// Runs in the lwIP thread (see runPortal). The AP path of CYW43::begin() does not block.
+static void startSoftAp(void* param){
+  SoftApArgs* a = static_cast<SoftApArgs*>(param);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(a->ip, a->ip, IPAddress(255, 255, 255, 0));
+  a->ok = WiFi.softAP(a->name);
+}
+
 [[noreturn]] static void runPortal(const char* portalName, bool haveCreds){
   // Same sequence as arduino-pico's DNSServer/CaptivePortal example.
-  const IPAddress ip(192, 168, 4, 1);
   DS_LOG("starting AP %s", portalName);
-  WiFi.mode(WIFI_AP);
-  WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
-  bool apOk = WiFi.softAP(portalName);
-  DS_LOG("softAP %s, IP %s", apOk ? "ok" : "FAILED", WiFi.softAPIP().toString().c_str());
+  SoftApArgs ap{portalName, IPAddress(192, 168, 4, 1), false};
+  // arduino-pico <= 6.1.1 FreeRTOS bug: bringing the AP netif up from a user task ends in
+  // netif_set_default(), which the lwIP thread does not implement ("Unimplemented LWIP thread
+  // action" panic). Inside the lwIP thread the wrapped lwIP calls run directly, so start it there.
+  lwip_callback(startSoftAp, &ap);
+  const IPAddress ip = ap.ip;
+  DS_LOG("softAP %s, IP %s", ap.ok ? "ok" : "FAILED", WiFi.softAPIP().toString().c_str());
   DS_LOG_STACK("after softAP");
 
   // Heap allocated: they live for the rest of this boot (the portal ends with a reboot).
