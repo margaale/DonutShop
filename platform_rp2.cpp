@@ -583,14 +583,55 @@ static String scanNetworkList(){
   }
 }
 
+#if !DS_RT4K_USB
+// Debug build: sample what the task bringing the CYW43 up (and the LWIP task) are doing every 20 ms,
+// to see where the ~8 s CYW43 bring-up goes: blocked (waits/timeouts), running/ready (CPU work), ...
+static volatile bool bringupSampling = false;
+static TaskHandle_t bringupTask = nullptr;
+
+static void bringupSamplerTask(void*){
+  static const char* const names[] = {"run", "ready", "blocked", "suspended", "deleted", "invalid"};
+  uint32_t wifiCount[6] = {0}, lwipCount[6] = {0};
+  TaskHandle_t lwip = xTaskGetHandle("LWIP");
+  eTaskState lastWifi = eInvalid;
+  uint32_t lastChange = millis(), transitions = 0;
+  while(bringupSampling){
+    const eTaskState w = eTaskGetState(bringupTask);
+    const eTaskState l = lwip ? eTaskGetState(lwip) : eInvalid;
+    wifiCount[w < 6 ? w : 5]++;
+    lwipCount[l < 6 ? l : 5]++;
+    if(w != lastWifi){
+      if(transitions < 40) DS_LOG("  bring-up task %s -> %s after %lu ms", lastWifi < 6 ? names[lastWifi] : "?", names[w < 6 ? w : 5], (unsigned long)(millis() - lastChange));
+      transitions++;
+      lastWifi = w;
+      lastChange = millis();
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  DS_LOG("bring-up samples (20 ms): task run %lu ready %lu blocked %lu suspended %lu | LWIP run %lu ready %lu blocked %lu | %lu transitions",
+    (unsigned long)wifiCount[0], (unsigned long)wifiCount[1], (unsigned long)wifiCount[2], (unsigned long)wifiCount[3],
+    (unsigned long)lwipCount[0], (unsigned long)lwipCount[1], (unsigned long)lwipCount[2], (unsigned long)transitions);
+  vTaskDelete(nullptr);
+}
+#endif
+
 static void wifiBeginImpl(const char* hostname, const char* portalName){
   DS_LOG_STACK("wifi task start");
   // Bring the CYW43 up (firmware download) from this task before the status LED task starts: the LED
   // is on the CYW43, and LED writes run in the LWIP task. If the first CYW43 access happens there, the
   // download waits on events that the busy LWIP task must deliver, and the chip is left half up
   // ("F2 not ready": no scan results, no AP, no LED).
+#if !DS_RT4K_USB
+  bringupTask = xTaskGetCurrentTaskHandle();
+  bringupSampling = true;
+  xTaskCreate(bringupSamplerTask, "DSSAMPLE", 1024, nullptr, configMAX_PRIORITIES - 2, nullptr);
+  const uint32_t upStart = millis();
+#endif
   cyw43_arch_enable_sta_mode();
-  DS_LOG("CYW43 up");
+#if !DS_RT4K_USB
+  bringupSampling = false;
+  DS_LOG("CYW43 up in %lu ms", (unsigned long)(millis() - upStart));
+#endif
   ledBegin();
   bool fsOk = platform::fsBegin(); // credentials live in LittleFS; setup() mounts it later again, which is a no-op
   DS_LOG("LittleFS %s", fsOk ? "mounted" : "FAILED");
