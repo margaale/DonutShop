@@ -503,20 +503,17 @@ void setup(){
   analogWrite(LED_BLUE,255);
 
   initPCIInterruptForTinyReceiver(); // for IR Receiver
-  #if defined(ARDUINO_ARCH_ESP32)
   Serial.begin(9600);                           // set the baud rate for the RT4K VGA serial connection
+  #if defined(ARDUINO_ARCH_ESP32)
   extronSerial.begin(9600,SERIAL_8N1,3,4);   // set the baud rate for the Extron sw1 Connection
   #else
-  Serial.setTX(DS_RT4K_TX_PIN); Serial.setRX(DS_RT4K_RX_PIN);
-  Serial.begin(9600);
-  extronSerial.setTX(DS_EXTRON1_TX_PIN); extronSerial.setRX(DS_EXTRON1_RX_PIN);
-  extronSerial.begin(9600);
+  extronSerial.begin(9600); // Pico 2 W: UART pins in platform.h
   #endif
   extronSerial.setTimeout(50);                 // sets the timeout for reading / saving into a string
   #if defined(ARDUINO_ARCH_ESP32)
   extronSerial2.begin(9600,SERIAL_8N1,8,9);  // set the baud rate for Extron sw2 Connection
   #else
-  extronSerial2.begin(9600); // SerialPIO, pins set in platform_rp2.cpp
+  extronSerial2.begin(9600);
   #endif
   extronSerial2.setTimeout(50);                // sets the timeout for reading / saving into a string for the Extron sw2 Connection3
   ecap.reserve(MAX_BYTES); // reserve MAX_BYTES bytes in memory to prevent fragmentation
@@ -632,20 +629,16 @@ void readGameID(){ // queries addresses in "consoles" array for gameIDs
       if(WiFi.status() == WL_CONNECTED && consoles[i].Enabled){ // wait for WiFi connection
         HTTPClient http;
         WiFiClientSecure https;
-        #if defined(ARDUINO_ARCH_ESP32)
         http.setConnectTimeout(2000); // give only 2 seconds per http console to check gameID, is only honored for IP-based addresses
-        #else
-        http.setTimeout(2000); // ESP8266-style HTTPClient: the TCP timeout also bounds the connect
-        #endif
         https.setInsecure(); // needed for MemCardPro 2.0+ firmware support
         https.setTimeout(5); // give 5 seconds for https 
-        #if defined(ARDUINO_ARCH_ESP32)
         https.setHandshakeTimeout(5); // ^^^
-        #endif
         if(consoles[i].Address.substring(0,5) == "https") http.begin(https,consoles[i].Address);
         else http.begin(consoles[i].Address);
         analogWrite(LED_BLUE,222);
+        DS_STATUS(QueryStart);
         int httpCode = http.GET();             // start connection and send HTTP header
+        if(httpCode <= 0 && httpCode != -11) DS_STATUS(QueryFailed);
         if(httpCode > 0 || httpCode == -11){   // httpCode will be negative on error, let the read error slide...
           if(httpCode == HTTP_CODE_OK){        // console is healthy // HTTP header has been sent and Server response header has been handled
             consoles[i].Address = replaceDomainWithIP(consoles[i].Address); // replace Domain with IP in consoles array. this allows setConnectTimeout to be honored
@@ -2323,6 +2316,7 @@ void sendSVS(uint16_t num){
   #endif
 
   digitalWrite(LED_BUILTIN,HIGH);
+  DS_STATUS(ProfileSent);
   Serial.print(F("\rSVS NEW INPUT="));
   if(num != 0)Serial.print(num + offset + altprofoffset);
   else Serial.print(num);;
@@ -2351,6 +2345,7 @@ void sendRBP(int prof){ // send Remote Button Profile
   Serial.println(F("\r"));
   prevProf = currentProf;
   currentProf = -1*prof; // always store remote button profiles as negative numbers
+  DS_STATUS(ProfileSent);
   #if !usbMode // add the 1s red led indicator after the VGA Serial command is sent
   digitalWrite(LED_BUILTIN,HIGH);
   vTaskDelay(pdMS_TO_TICKS(1000));
@@ -3015,14 +3010,10 @@ void handleGithubAssetProxy(){
 
   WiFiClientSecure https;
   https.setInsecure();
-  #if defined(ARDUINO_ARCH_ESP32)
   https.setHandshakeTimeout(15);
-  #endif
 
   HTTPClient http;
-  #if defined(ARDUINO_ARCH_ESP32)
   http.setConnectTimeout(15000);
-  #endif
   http.setTimeout(30000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 

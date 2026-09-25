@@ -123,6 +123,92 @@ static void usbService(){}
 #endif // DS_RT4K_USB
 
 ////////////////////////////////////////////////////////////////////////////////////
+// Status LED. The Pico 2 W has one LED (on the CYW43) where the Nano ESP32 has an RGB LED, so
+// states become blink patterns (README "Status LED"):
+//   joining Wi-Fi: fast blink (5 Hz)   setup portal: slow blink (1 Hz)   connected: solid on
+//   while connected: gameID query started = short wink, console did not answer = double wink,
+//   profile sent to the RT4K = 3 quick blinks.
+// Its own task drives it, since WiFi.begin() blocks for many seconds. Events come from any task
+// (DDloop/GIDloop may run on the other core) through an atomic bitmask.
+
+enum LedMode : uint8_t { LED_JOINING, LED_PORTAL, LED_CONNECTED };
+static volatile LedMode ledMode = LED_JOINING;
+static volatile bool ledWifiUp = false; // set once wifiBegin() returns; loss of Wi-Fi then shows as joining
+static uint32_t ledEvents = 0;          // bit per platform::StatusEvent, accessed with __atomic builtins
+
+void platform::statusEvent(StatusEvent event){
+  __atomic_fetch_or(&ledEvents, 1u << (uint8_t)event, __ATOMIC_RELEASE);
+}
+
+// Patterns shown over the solid "connected" state: durations in ms, alternating off/on, starting off.
+static const uint16_t LED_WINK[] = {80};
+static const uint16_t LED_DOUBLE_WINK[] = {80, 150, 80};
+static const uint16_t LED_PROFILE[] = {100, 100, 100, 100, 100};
+
+static void ledTask(void*){
+  const uint16_t* pattern = nullptr;
+  uint8_t patternLen = 0, step = 0;
+  uint32_t stepStart = 0, lastWrite = 0, lastWifiCheck = 0;
+  bool wrote = false;
+  for(;;){
+    const uint32_t now = millis();
+    LedMode mode = ledMode;
+    if(ledWifiUp){
+      static bool linkUp = true;
+      if(now - lastWifiCheck >= 500){ // WiFi.status() goes through the LWIP task; don't hammer it
+        lastWifiCheck = now;
+        linkUp = WiFi.status() == WL_CONNECTED;
+      }
+      mode = linkUp ? LED_CONNECTED : LED_JOINING;
+    }
+
+    const uint32_t ev = __atomic_exchange_n(&ledEvents, 0u, __ATOMIC_ACQUIRE);
+    auto start = [&](const uint16_t* p, uint8_t n){ pattern = p; patternLen = n; step = 0; stepStart = now; };
+    if(mode == LED_CONNECTED){
+      const bool showingProfile = pattern == LED_PROFILE;
+      if(ev & (1u << (uint8_t)platform::StatusEvent::ProfileSent)) start(LED_PROFILE, 5);
+      else if(!showingProfile && (ev & (1u << (uint8_t)platform::StatusEvent::QueryFailed))) start(LED_DOUBLE_WINK, 3);
+      else if(!pattern && (ev & (1u << (uint8_t)platform::StatusEvent::QueryStart))) start(LED_WINK, 1);
+    }
+    else{
+      pattern = nullptr;
+    }
+
+    bool on;
+    if(mode == LED_JOINING) on = (now / 100) % 2;
+    else if(mode == LED_PORTAL) on = (now / 500) % 2;
+    else{
+      on = true;
+      if(pattern){
+        while(pattern && now - stepStart >= pattern[step]){
+          stepStart += pattern[step];
+          if(++step >= patternLen) pattern = nullptr;
+        }
+        if(pattern) on = (step % 2) == 1; // even steps are "off"
+      }
+    }
+
+    // Rewrite periodically too: the sketch's own LED_BUILTIN writes (Nano logic) must not stick.
+    static bool lastOn = false;
+    if(!wrote || on != lastOn || now - lastWrite >= 50){
+      digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
+      lastOn = on;
+      lastWrite = now;
+      wrote = true;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+static void ledBegin(){
+  static bool started = false;
+  if(started) return;
+  started = true;
+  pinMode(LED_BUILTIN, OUTPUT);
+  xTaskCreate(ledTask, "DSLED", 1024, nullptr, tskIDLE_PRIORITY + 2, nullptr);
+}
+
+////////////////////////////////////////////////////////////////////////////////////
 // Core services
 
 bool platform::fsBegin(){
@@ -136,6 +222,8 @@ void platform::restart(){
 }
 
 #if !DS_RT4K_USB
+static void debugSerialCommands(); // Wi-Fi section below
+
 // Debug build: every 10 s, the numbers that tell a slow leak or a stack overflow from a Wi-Fi drop.
 static void debugHeartbeat(){
   static uint32_t last = 0;
@@ -157,6 +245,7 @@ void platform::loopHook(){
   MDNS.update();
 #if !DS_RT4K_USB
   debugHeartbeat();
+  debugSerialCommands();
 #endif
   delay(1); // loop() outranks DDloop/GIDloop, it must block to let them run
 }
@@ -240,28 +329,51 @@ static bool saveCreds(const String& ssid, const String& pass){
 // from STA (a failed join, or a scan) to AP in place left the AP without working DHCP.
 static const char* PORTAL_FLAG_FILE = "/portal.flag";
 
-static void blinkLed(uint32_t periodMs){
-  static uint32_t last = 0;
-  static bool on = false; // not digitalRead(): the Pico 2 W LED sits on the CYW43 and does not read back
-  if(millis() - last >= periodMs / 2){
-    last = millis();
-    on = !on;
-    digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
+#if !DS_RT4K_USB
+// Debug build: commands typed on the USB serial console. "portal" reboots into the setup portal
+// (keeping the saved network), "reboot" just reboots.
+static void debugSerialCommands(){
+  static char line[16];
+  static uint8_t len = 0;
+  while(Serial.available()){
+    const char c = Serial.read();
+    if(c != '' && c != '
+'){
+      if(len < sizeof(line) - 1) line[len++] = c;
+      continue;
+    }
+    line[len] = 0;
+    len = 0;
+    if(!strcmp(line, "portal")){
+      DS_LOG("command: portal, rebooting into the setup portal");
+      File f = LittleFS.open(PORTAL_FLAG_FILE, "w");
+      f.close();
+      delay(100);
+      rp2040.reboot();
+    }
+    else if(!strcmp(line, "reboot")){
+      DS_LOG("command: reboot");
+      delay(100);
+      rp2040.reboot();
+    }
+    else if(line[0]){
+      DS_LOG("unknown command '%s' (portal, reboot)", line);
+    }
   }
 }
+#endif
 
 static bool connectSta(const char* hostname, const String& ssid, const String& pass){
   DS_LOG("joining %s", ssid.c_str());
+  ledMode = LED_JOINING;
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(hostname);
   if(pass.length()) WiFi.begin(ssid.c_str(), pass.c_str());
   else WiFi.begin(ssid.c_str());
   uint32_t start = millis();
   while(WiFi.status() != WL_CONNECTED && millis() - start < STA_CONNECT_TIMEOUT){
-    blinkLed(200); // fast blink: joining
-    delay(20);
+    delay(100);
   }
-  digitalWrite(LED_BUILTIN, LOW);
   if(WiFi.status() != WL_CONNECTED) return false;
   WiFi.noLowPowerMode(); // same as esp_wifi_set_ps(WIFI_PS_NONE) on the ESP32
   return true;
@@ -327,6 +439,7 @@ static String scanNetworkList(){
 }
 
 [[noreturn]] static void runPortal(const char* portalName, bool haveCreds){
+  ledMode = LED_PORTAL;
   const String networks = scanNetworkList();
 
   // Same sequence as arduino-pico's DNSServer/CaptivePortal example.
@@ -399,10 +512,13 @@ static String scanNetworkList(){
     if(millis() - lastBeat > 10000){
       lastBeat = millis();
       DS_LOG("portal alive, %d client(s)", WiFi.softAPgetStationNum());
+      DS_LOG_STACK("portal");
     }
+#if !DS_RT4K_USB
+    debugSerialCommands();
+#endif
     dns->processNextRequest();
     portal->handleClient();
-    blinkLed(1000); // slow blink: setup portal active
     if(saved){
       delay(1500); // let the response go out
       rp2040.reboot();
@@ -428,6 +544,8 @@ static void wifiBeginImpl(const char* hostname, const char* portalName){
   if(!haveCreds) runPortal(portalName, false); // first boot: radio untouched so far
   if(connectSta(hostname, ssid, pass)){
     DS_LOG("connected, IP %s", WiFi.localIP().toString().c_str());
+    ledMode = LED_CONNECTED;
+    ledWifiUp = true;
     return;
   }
   DS_LOG("join failed, rebooting into the portal");
@@ -455,6 +573,7 @@ static void wifiTask(void* param){
 }
 
 void platform::wifiBegin(const char* hostname, const char* portalName){
+  ledBegin();
 #if !DS_RT4K_USB
   Serial.begin(115200);
   uint32_t t0 = millis();

@@ -158,7 +158,7 @@ arduino-cli compile --profile pico2w --build-path build/pico2w .
 arduino-cli downloads the pinned cores and libraries the first time you build. Build the whole folder, not just `DonutShop.ino`: the board-specific code is in `platform.h` and `platform_rp2.cpp`. The Arduino IDE builds those files too when you open the sketch folder.
 
 ## Raspberry Pi Pico 2 W (experimental)
-The Pico 2 W build does what the Nano ESP32 build does: gameID, WebCtl, OTA, Extron / TESmart / MT-VIKI serial, IR, and USB or HD-15 serial to the RT4K. It compiles in CI, but **it has not been tested on hardware yet.**
+The Pico 2 W build does what the Nano ESP32 build does: gameID, WebCtl, OTA, Extron / TESmart / MT-VIKI serial, IR, and USB or HD-15 serial to the RT4K. It compiles in CI, but **it has not been tested on hardware yet.**
 
 The Pico build needs a patched arduino-pico core: 6.1.1 has FreeRTOS networking bugs that crash or hang the board. CI applies the patch automatically. For local builds, see [extras/arduino-pico-patches](extras/arduino-pico-patches/README.md).
 
@@ -176,7 +176,18 @@ The Pico build needs a patched arduino-pico core: 6.1.1 has FreeRTOS networking 
 - **First install:** hold BOOTSEL while you plug the Pico into your computer, then copy `DonutShop_vX.X.X_pico2w.uf2` to the drive that appears.
 - **Updates:** "Check for Updates" in Settings works the same way. It installs the `DonutShop_vX.X.X_pico2w_update.bin` asset from the same GitHub release, which `.github/workflows/release-pico2w.yml` builds and attaches to every published release. If you update manually, use the `_pico2w_update.bin` file. The Pico refuses Nano ESP32 images.
 - **Wi-Fi setup:** join the `DonutShop_Setup` access point, pick your network from the list (or type its name) and enter the password. If it cannot connect to the saved network within 20 seconds, it reboots into the setup AP. With a saved network and no one using the AP, it reboots after 5 minutes and tries the saved network again.
-- **Status LED:** the Pico 2 W has no RGB LED. The on-board LED blinks fast while joining Wi-Fi and once per second while the setup AP is active. The orange / blue / green colors from the table above need the optional external RGB LED.
+- **Status LED:** the Pico 2 W has one on-board LED instead of the RGB LED, so the states become blink patterns:
+
+  | Pattern | Meaning (Nano ESP32 color) |
+  | ------- | -------------------------- |
+  | Fast blink (5 per second) | Joining Wi-Fi, or Wi-Fi lost (🟠) |
+  | Slow blink (1 per second) | `DonutShop_Setup` access point active (🟠) |
+  | Solid on | Connected |
+  | Short wink | gameID query to a console (🔵) |
+  | Double wink | That console did not answer (long 🔵) |
+  | 3 quick blinks | Profile sent to the RT4K (🟢) |
+
+  The optional external RGB LED on GP16-18 shows the original colors.
 - The Pico's USB port acts as the host for the RT4K, so it has no USB serial monitor. To troubleshoot, flash the `pico2w_debug` build instead: its USB port is a serial console (115200 baud) with boot logs, and RT4K USB is disabled.
 
 <br />

@@ -48,6 +48,9 @@
 // WebCtl "Check GitHub" updater asset: DonutShop_v<ver>_update.bin
 #define DS_UPDATE_ASSET_SUFFIX "_update.bin"
 
+// Status events for boards with a single status LED; the Nano ESP32 has its RGB LED instead.
+#define DS_STATUS(event) do {} while (0)
+
 #elif defined(ARDUINO_ARCH_RP2040)
 
 #if !defined(__FREERTOS)
@@ -68,10 +71,8 @@
 #include <WebServer.h>
 
 // ---- Pico 2 W pinout (GPx numbers) -------------------------------------------------------------
-#define DS_RT4K_TX_PIN     8   // RT4K HD-15 serial (Serial2 / UART1)
-#define DS_RT4K_RX_PIN     9
-#define DS_EXTRON1_TX_PIN  0   // Extron sw1 (Serial1 / UART0)
-#define DS_EXTRON1_RX_PIN  1
+// RT4K HD-15 serial = Serial2 (UART1) on the core's default pins: TX GP8, RX GP9
+// Extron sw1        = Serial1 (UART0) on the core's default pins: TX GP0, RX GP1
 #define DS_EXTRON2_TX_PIN  4   // Extron sw2 (SerialPIO2)
 #define DS_EXTRON2_RX_PIN  5
 #define IR_RECEIVE_PIN     2   // Optional IR receiver
@@ -92,6 +93,12 @@
 // FreeRTOS xTaskCreate() stack depth is in WORDS here: 8192 words = 32 KB.
 // Both tasks may run BearSSL (HTTPS console polling / GitHub proxy), which is stack hungry.
 #define DS_TASK_STACK 8192
+
+// arduino-pico's HTTPClient is the ESP8266 one: no setConnectTimeout(), its TCP timeout also bounds
+// the connect. Its BearSSL WiFiClientSecure has no setHandshakeTimeout() (seconds). Map both onto
+// setTimeout() so the sketch's calls stay as upstream. (No core header uses these names.)
+#define setConnectTimeout(ms) setTimeout(ms)
+#define setHandshakeTimeout(sec) setTimeout((sec) * 1000)
 
 // The ESP32 FS layer defines these, arduino-pico does not.
 #ifndef FILE_READ
@@ -117,6 +124,15 @@ extern Rt4kUsbSerial CdcSerial;
 extern SerialPIO SerialPIO2;
 
 namespace platform {
+  // Things the Nano ESP32 shows on its RGB LED, shown on the Pico's single LED as blink patterns
+  // (see README). Any task may report them.
+  enum class StatusEvent : uint8_t {
+    QueryStart,   // gameID query to a console started (Nano: blue on)
+    QueryFailed,  // that console did not answer (Nano: long blue)
+    ProfileSent,  // profile sent to the RT4K (Nano: LED_BUILTIN flash)
+  };
+  void statusEvent(StatusEvent event);
+
   // Mounts LittleFS (formats and retries on failure). Safe to call more than once.
   bool fsBegin();
   // Connects to the stored Wi-Fi network, or runs a captive portal named portalName (never returns
@@ -129,6 +145,8 @@ namespace platform {
   void updateUpload(HTTPUpload& upload);
   bool updateFailed();
 }
+
+#define DS_STATUS(event) platform::statusEvent(platform::StatusEvent::event)
 
 #else
 #error "Unsupported target: DonutShop builds for the Arduino Nano ESP32 or the Raspberry Pi Pico 2 W"
